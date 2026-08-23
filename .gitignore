@@ -1,0 +1,22 @@
+# Build artifacts
+*.exe
+seam-ui
+seam-bin
+xolu-bin
+
+# Merged output (created by merge.sh)
+merged-seam/
+
+# Temp merge directories
+/tmp/seam-merge-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
