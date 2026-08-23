@@ -27,7 +27,7 @@ seam-issues-tracker/          ← this repo
 ### Step 1: Clone this repo
 
 ```bash
-git clone https://github.com/<your-org>/seam-issues-tracker.git
+git clone https://github.com/Darlinx25/seam-issues-tracker.git
 cd seam-issues-tracker
 ```
 
