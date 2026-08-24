@@ -68,6 +68,14 @@ cp config.example.json config.json
 /tmp/seam-bin serve
 ```
 
+### Step 5 (Optional): Seed demo data
+
+```bash
+cd /tmp/seam-dev
+python3 seeds/seed-01-constructec.py --url http://localhost:9090
+```
+
+
 Xolu: http://localhost:9090
 
 Seam: http://localhost:8080
