@@ -46,24 +46,31 @@ with our changes applied on top.
 
 ```bash
 cd /tmp/seam-dev
-
-# Build seam
+```
+### Build seam
+```
 go build -o /tmp/seam-bin ./cmd/seam
+```
 
-# Build xolu (clone from github.com/ha1tch/xolu)
+### Build xolu (clone from github.com/ha1tch/xolu)
+```
 go build -o /tmp/xolu-bin ./cmd/xolu
+```
 
-# Terminal 1: Start xolu
-/tmp/xolu-bin serve --dev
+### Terminal 1: Start xolu
+```
+/tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
+```
 
-# Terminal 2: Copy config and start seam
+### Terminal 2: Copy config and start seam
+```
 cp config.example.json config.json
-# Edit config.json if needed (xolu should be at http://localhost:9090)
 /tmp/seam-bin serve
 ```
 
+Xolu: http://localhost:9090
 
-
+Seam: http://localhost:8080
 
 
 
