@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "title": "New Issue",
+  "properties": {
+    "title": {
+      "type": "string",
+      "title": "Title",
+      "x-seam-input": "text",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "title": "Description",
+      "x-seam-input": "textarea"
+    },
+    "asset_id": {
+      "type": "integer",
+      "title": "Related Asset",
+      "x-seam-input": "asset-picker",
+      "x-seam-source": "entity:assets",
+      "x-seam-search-fields": ["name"],
+      "x-seam-display-fields": ["name", "status"],
+      "x-seam-help": "Optional -- search for the asset this issue relates to",
+      "x-seam-help-style": "inline"
+    }
+  },
+  "required": ["title"]
+}
