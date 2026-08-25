@@ -31,7 +31,7 @@ git clone https://github.com/Darlinx25/seam-issues-tracker.git
 cd seam-issues-tracker
 ```
 
-### Step 2: Get the Seam Source Code
+### Step 2: Get the Seam Source Code zip
 
 ### Step 3: Run the merge
 
@@ -52,7 +52,7 @@ cd /tmp/seam-dev
 go build -o /tmp/seam-bin ./cmd/seam
 ```
 
-### Build xolu (clone from github.com/ha1tch/xolu)
+### Build xolu with the xolu.zip or clone it from github.com/ha1tch/xolu
 ```
 go build -o /tmp/xolu-bin ./cmd/xolu
 ```
@@ -75,10 +75,20 @@ cd /tmp/seam-dev
 python3 seeds/seed-01-constructec.py --url http://localhost:9090
 ```
 
-
 Xolu: http://localhost:9090
 
 Seam: http://localhost:8080
+
+### Step 6 (Optional): Build a demo package
+
+```
+cd /tmp/seam-dev
+```
+```
+make demo
+```
+Generates a self-contained ZIP with binaries, pre-loaded database, and
+a START.sh launcher. Target machine needs zero dependencies.
 
 
 
