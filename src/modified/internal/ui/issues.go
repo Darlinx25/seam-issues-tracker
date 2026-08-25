@@ -27,10 +27,26 @@ type Issue struct {
 	ID          int64
 	Title       string
 	Description string
-	Status      string // "open" | "closed"
+	Priority    string // "critical" | "high" | "medium" | "low"
+	Severity    string // "critical" | "major" | "minor"
+	State       string // "reported" | "in_progress" | "closed"
 	AssetID     int64
 	AssetName   string // resolved, not stored -- populated on read for display
 	CreatedAt   string
+}
+
+func issueFromEntity(e *xolu.Entity) Issue {
+	return Issue{
+		ID:          e.ID,
+		Title:       toString(e.Data["title"]),
+		Description: toString(e.Data["description"]),
+		Priority:    toString(e.Data["priority"]),
+		Severity:    toString(e.Data["severity"]),
+		State:       toString(e.Data["state"]),
+		MachineID:   toInt64(e.Data["machine_id"]),
+		AssetID:     toInt64(e.Data["asset_id"]),
+		CreatedAt:   toString(e.Data["created_at"]),
+	}
 }
 
 // IssuesList handles GET /issues.
@@ -43,11 +59,14 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		for _, row := range result.Data {
 			issues = append(issues, Issue{
-				ID:      toInt64(row["id"]),
-				Title:   toString(row["title"]),
-				Status:  toString(row["status"]),
-				AssetID: toInt64(row["asset_id"]),
-			})
+			ID:        toInt64(row["id"]),
+			Title:     toString(row["title"]),
+			Priority:  toString(row["priority"]),
+			Severity:  toString(row["severity"]),
+			State:     toString(row["state"]),
+			MachineID: toInt64(row["machine_id"]),
+			AssetID:   toInt64(row["asset_id"]),
+		})
 		}
 	} else {
 		h.logger.Error("failed to list issues", "error", err)
@@ -151,14 +170,7 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issue := Issue{
-		ID:          entity.ID,
-		Title:       toString(entity.Data["title"]),
-		Description: toString(entity.Data["description"]),
-		Status:      toString(entity.Data["status"]),
-		AssetID:     toInt64(entity.Data["asset_id"]),
-		CreatedAt:   toString(entity.Data["created_at"]),
-	}
+	issue := issueFromEntity(entity)
 	if issue.AssetID > 0 {
 		if asset, err := h.xoluClient.Get(ctx, "assets", issue.AssetID); err == nil {
 			issue.AssetName = toString(asset.Data["name"])
@@ -335,4 +347,39 @@ func toggleLabel(status string, t func(key string, args ...any) string) string {
 		return t("issues.action.reopen")
 	}
 	return t("issues.action.close")
+}
+
+// ensureIssueFSMDefinition idempotently ensures the FSM definition exists,
+// creating it on first use. Called lazily from IssueCreate, not at startup.
+func (h *UIHandler) ensureIssueFSMDefinition(ctx context.Context) (int64, error) {
+	defs, err := h.xoluClient.ListMachineDefs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, d := range defs {
+		if d.Name == issueDefName {
+			return d.ID, nil
+		}
+	}
+
+	result, err := h.xoluClient.CreateMachineDef(ctx, xolu.MachineSpec{
+			Name:        issueDefName,
+			Description: "Seam AMS Issues lifecycle (v3 minimal slice)",
+			Initial:     "reported",
+			Determinism: "firstmatch",
+			States: map[string]xolu.StateDef{
+				"reported":    {Terminal: false},
+				"in_progress": {Terminal: false},
+				"closed":      {Terminal: true},
+			},
+			Transitions: []xolu.TransitionDef{
+				{From: json.RawMessage(`"reported"`), Input: "start", To: "in_progress"},
+				{From: json.RawMessage(`"in_progress"`), Input: "resolve", To: "closed"},
+			},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ID, nil
+
 }

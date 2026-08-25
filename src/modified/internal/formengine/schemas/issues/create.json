@@ -19,11 +19,41 @@
       "title": "Related Asset",
       "x-seam-input": "asset-picker",
       "x-seam-source": "entity:assets",
-      "x-seam-search-fields": ["name"],
-      "x-seam-display-fields": ["name", "status"],
+      "x-seam-search-fields": [
+        "name"
+      ],
+      "x-seam-display-fields": [
+        "name",
+        "status"
+      ],
       "x-seam-help": "Optional -- search for the asset this issue relates to",
       "x-seam-help-style": "inline"
+    },
+    "priority": {
+      "type": "string",
+      "title": "Priority",
+      "x-seam-input": "select",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "default": "medium"
+    },
+    "severity": {
+      "type": "string",
+      "title": "Severity",
+      "x-seam-input": "select",
+      "enum": [
+        "critical",
+        "major",
+        "minor"
+      ],
+      "default": "minor"
     }
   },
-  "required": ["title"]
+  "required": [
+    "title"
+  ]
 }
