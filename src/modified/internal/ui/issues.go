@@ -12,12 +12,15 @@ package ui
 // verification).
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	mi "github.com/ha1tch/minty"
+	xolu "github.com/ha1tch/xolu/pkg/client"
 	fe "github.com/ha1tch/seam-ui/internal/formengine"
 	issueschemas "github.com/ha1tch/seam-ui/internal/formengine/schemas/issues"
 )
@@ -30,10 +33,13 @@ type Issue struct {
 	Priority    string // "critical" | "high" | "medium" | "low"
 	Severity    string // "critical" | "major" | "minor"
 	State       string // "reported" | "in_progress" | "closed"
+	MachineID   int64
 	AssetID     int64
 	AssetName   string // resolved, not stored -- populated on read for display
 	CreatedAt   string
 }
+
+const issueDefName = "seam_issue_lifecycle"
 
 func issueFromEntity(e *xolu.Entity) Issue {
 	return Issue{
@@ -115,7 +121,16 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	title := r.FormValue("title")
 	description := r.FormValue("description")
 	assetIDStr := r.FormValue("asset_id")
+	priority := r.FormValue("priority")
+	severity := r.FormValue("severity")
 	csrfToken := h.GetCSRFToken(w, r)
+
+	if priority == "" {
+		priority = "medium"
+	}
+	if severity == "" {
+		severity = "minor"
+	}
 
 	errors := map[string]string{}
 	if title == "" {
@@ -125,21 +140,35 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 		rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
 		formContent := formEng.Render(ctx, issueschemas.Schema("create"),
-			map[string]interface{}{"title": title, "description": description, "asset_id": assetIDStr}, errors, rc)
+			map[string]interface{}{"title": title, "description": description, "asset_id": assetIDStr, "priority": priority, "severity": severity}, errors, rc)
 		data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent, Errors: errors}
 		h.page.Render(w, r, t("issues.new"), "/issues", IssueFormPage(data, t))
+		return
+	}
+
+	defID, err := h.ensureIssueFSMDefinition(ctx)
+	if err != nil {
+		h.logger.Error("failed to bootstrap issue FSM definition", "error", err)
+		http.Error(w, "Failed to initialize issue workflow", http.StatusInternalServerError)
+		return
+	}
+
+	machine, err := h.xoluClient.CreateMachine(ctx, xolu.CreateMachineRequest{Definition: defID})
+	if err != nil {
+		h.logger.Error("failed to create issue FSM machine", "error", err)
+		http.Error(w, "Failed to create issue workflow", http.StatusInternalServerError)
 		return
 	}
 
 	issueData := map[string]any{
 		"title":       title,
 		"description": description,
-		"status":      "open",
+		"priority":    priority,
+		"severity":    severity,
+		"state":       machine.State,
+		"machine_id":  machine.ID,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
 	}
-	// asset_id is optional -- the picker's own hidden field submits an
-	// empty string when nothing was selected, not "0"; only set it
-	// when a real selection was made.
 	if assetID, err := strconv.ParseInt(assetIDStr, 10, 64); err == nil && assetID > 0 {
 		issueData["asset_id"] = assetID
 	}
@@ -181,11 +210,18 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 }
 
-// IssueToggleStatus handles POST /issues/{id}/toggle-status -- flips
-// open<->closed. Deliberately not an FSM machine walk: a two-state
-// status field for a "simple" module doesn't need xolu's own FSM
-// primitives, the same reasoning documented at the top of this file.
-func (h *UIHandler) IssueToggleStatus(w http.ResponseWriter, r *http.Request) {
+// IssueStart handles POST /issues/{id}/start -- walks from "reported" to "in_progress".
+func (h *UIHandler) IssueStart(w http.ResponseWriter, r *http.Request) {
+	h.IssueTransition(w, r, "start")
+}
+
+// IssueResolve handles POST /issues/{id}/resolve -- walks from "in_progress" to "closed".
+func (h *UIHandler) IssueResolve(w http.ResponseWriter, r *http.Request) {
+	h.IssueTransition(w, r, "resolve")
+}
+
+// IssueTransition is the shared fetch-walk-denormalize sequence.
+func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, input string) {
 	t := h.translateFunc()
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -199,12 +235,23 @@ func (h *UIHandler) IssueToggleStatus(w http.ResponseWriter, r *http.Request) {
 		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
 		return
 	}
-	newStatus := "closed"
-	if toString(entity.Data["status"]) == "closed" {
-		newStatus = "open"
+	issue := issueFromEntity(entity)
+
+	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{Input: input})
+	if err != nil {
+		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
+		csrfToken := h.GetCSRFToken(w, r)
+		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error()}
+		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
+		return
 	}
-	if _, err := h.xoluClient.Patch(ctx, "issues", id, map[string]any{"status": newStatus}); err != nil {
-		h.logger.Error("failed to toggle issue status", "id", id, "error", err)
+
+	patchData := map[string]any{
+		"state":      result.Current,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
+		h.logger.Error("issue walked but state patch failed", "id", id, "error", err)
 	}
 
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
@@ -232,7 +279,7 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			Href:     fmt.Sprintf("/issues/%d", iss.ID),
 			Title:    iss.Title,
 			Subtitle: assetLine,
-			Badge:    issueStatusBadge(iss.Status, t),
+			Badge:    issueStatusBadge(iss.State, t),
 		}
 	}
 	return func(b *mi.Builder) mi.Node {
@@ -254,11 +301,15 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 // since "closed" doesn't match any of Badge's known variant keywords.
 // Was a hand-rolled duplicate of Badge's own pill markup until
 // 2026-08-06; now a thin mapping, no markup of its own.
-func issueStatusBadge(status string, t func(key string, args ...any) string) mi.H {
-	if status == "open" {
-		return Badge(t("issues.status.open"), "warning")
+func issueStatusBadge(state string, t func(key string, args ...any) string) mi.H {
+	switch state {
+	case "in_progress":
+		return Badge(t("issues.state.in_progress"), "info")
+	case "closed":
+		return Badge(t("issues.state.closed"), "success")
+	default:
+		return Badge(t("issues.state.reported"), "warning")
 	}
-	return Badge(t("issues.status.closed"), "closed")
 }
 
 // IssueFormData holds data for the create-issue form.
@@ -302,6 +353,7 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 type IssueDetailData struct {
 	Issue     Issue
 	CSRFToken string
+	WalkError string
 }
 
 // IssueDetailPage renders the issue detail page.
@@ -317,7 +369,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					b.Span(mi.Class("material-icons"), "arrow_back"),
 				),
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), iss.Title),
-				issueStatusBadge(iss.Status, t)(b),
+				issueStatusBadge(iss.State, t)(b),
 			),
 			Card("", func(b *mi.Builder) mi.Node {
 				var children []interface{}
@@ -330,23 +382,28 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
 					))
 				}
-				children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/toggle-status", iss.ID)),
-					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-					b.Button(mi.Type("submit"), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
-						toggleLabel(iss.Status, t),
-					),
-				))
+				if data.WalkError != "" {
+					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
+					data.WalkError,))
+				}
+				switch iss.State {
+					case "reported":
+						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+						t("issues.action.start"),),
+						))
+					case "in_progress":
+						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+						t("issues.action.resolve"),),
+						))
+				}
 				return b.Div(children...)
 			})(b),
 		)
 	}
-}
-
-func toggleLabel(status string, t func(key string, args ...any) string) string {
-	if status == "closed" {
-		return t("issues.action.reopen")
-	}
-	return t("issues.action.close")
 }
 
 // ensureIssueFSMDefinition idempotently ensures the FSM definition exists,

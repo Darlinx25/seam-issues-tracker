@@ -509,7 +509,8 @@ func (r *Router) MountIssuesRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /issues/new", r.requireAuth(r.handler.IssueNew))
 	mux.HandleFunc("POST /issues", r.requireAuth(r.handler.IssueCreate))
 	mux.HandleFunc("GET /issues/{id}", r.requireAuth(r.handler.IssueDetail))
-	mux.HandleFunc("POST /issues/{id}/toggle-status", r.requireAuth(r.handler.IssueToggleStatus))
+	mux.HandleFunc("POST /issues/{id}/start", r.requireAuth(r.handler.IssueStart))
+	mux.HandleFunc("POST /issues/{id}/resolve", r.requireAuth(r.handler.IssueResolve))
 }
 
 // MountDocumentsRoutes registers the Documents module's routes -- just

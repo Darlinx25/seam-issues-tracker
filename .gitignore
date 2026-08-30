@@ -17,6 +17,8 @@ merged-seam/
 *.swo
 *~
 
+*.zip
+
 # OS
 .DS_Store
 Thumbs.db

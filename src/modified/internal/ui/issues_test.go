@@ -32,11 +32,21 @@ func TestIssueCreate_RequiredTitle(t *testing.T) {
 }
 
 // TestIssueCreate_WithAsset_LinksCorrectly confirms a real create call
-// including asset_id sends it through correctly, and status defaults
-// to "open" without the caller needing to supply it.
+// including asset_id sends it through correctly: the issue FSM
+// definition is bootstrapped (or found), a machine instance is created
+// for this issue, and state/machine_id are denormalized onto the entity
+// alongside priority/severity.
 func TestIssueCreate_WithAsset_LinksCorrectly(t *testing.T) {
 	var created map[string]any
 	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
 		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
 			json.NewDecoder(r.Body).Decode(&created)
 			w.Header().Set("Content-Type", "application/json")
@@ -51,14 +61,25 @@ func TestIssueCreate_WithAsset_LinksCorrectly(t *testing.T) {
 		"title":       {"Conveyor belt making noise"},
 		"description": {"Grinding sound on startup"},
 		"asset_id":    {"7"},
+		"priority":    {"high"},
+		"severity":    {"major"},
 	})
 
 	assertRedirectsTo(t, rec, "/issues/1")
 	if created == nil {
 		t.Fatal("xolu.Create for issues was never called")
 	}
-	if created["status"] != "open" {
-		t.Errorf("expected status to default to 'open', got %v", created["status"])
+	if created["state"] != "reported" {
+		t.Errorf("expected state to be 'reported' (machine initial), got %v", created["state"])
+	}
+	if created["machine_id"] != 1.0 {
+		t.Errorf("expected machine_id=1, got %v", created["machine_id"])
+	}
+	if created["priority"] != "high" {
+		t.Errorf("expected priority to be 'high', got %v", created["priority"])
+	}
+	if created["severity"] != "major" {
+		t.Errorf("expected severity to be 'major', got %v", created["severity"])
 	}
 	if created["asset_id"] != 7.0 {
 		t.Errorf("expected asset_id=7, got %v", created["asset_id"])
@@ -71,6 +92,14 @@ func TestIssueCreate_WithAsset_LinksCorrectly(t *testing.T) {
 func TestIssueCreate_WithoutAsset_OmitsAssetID(t *testing.T) {
 	var created map[string]any
 	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
 		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
 			json.NewDecoder(r.Body).Decode(&created)
 			w.Header().Set("Content-Type", "application/json")
@@ -92,21 +121,24 @@ func TestIssueCreate_WithoutAsset_OmitsAssetID(t *testing.T) {
 	}
 }
 
-// TestIssueToggleStatus_OpenToClosedAndBack confirms the toggle
-// actually flips based on the entity's current state, both directions,
-// not just a one-way "always set closed."
-func TestIssueToggleStatus_OpenToClosedAndBack(t *testing.T) {
-	currentStatus := "open"
-	var patchedStatus string
+// TestIssueStart_ReportedToInProgress confirms /issues/{id}/start walks
+// the issue's FSM machine with input "start", then denormalizes the new
+// state onto the entity.
+func TestIssueStart_ReportedToInProgress(t *testing.T) {
+	var patchedState string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "status": currentStatus})
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "reported", "current": "in_progress", "terminal": false})
 		},
 		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			patchedStatus = toString(body["status"])
+			patchedState = toString(body["state"])
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
 		},
@@ -114,23 +146,48 @@ func TestIssueToggleStatus_OpenToClosedAndBack(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	req := httptest.NewRequest("POST", "/issues/1/toggle-status", nil)
+	req := httptest.NewRequest("POST", "/issues/1/start", nil)
 	req.SetPathValue("id", "1")
 	rec := httptest.NewRecorder()
-	h.IssueToggleStatus(rec, req)
+	h.IssueStart(rec, req)
 	assertRedirectsTo(t, rec, "/issues/1")
-	if patchedStatus != "closed" {
-		t.Errorf("expected open->closed, got patched status %q", patchedStatus)
+	if patchedState != "in_progress" {
+		t.Errorf("expected state to be 'in_progress', got %q", patchedState)
 	}
+}
 
-	currentStatus = "closed"
-	req2 := httptest.NewRequest("POST", "/issues/1/toggle-status", nil)
-	req2.SetPathValue("id", "1")
-	rec2 := httptest.NewRecorder()
-	h.IssueToggleStatus(rec2, req2)
-	assertRedirectsTo(t, rec2, "/issues/1")
-	if patchedStatus != "open" {
-		t.Errorf("expected closed->open, got patched status %q", patchedStatus)
+// TestIssueResolve_InProgressToClosed confirms /issues/{id}/resolve walks
+// the issue's FSM machine with input "resolve", then denormalizes the
+// new state onto the entity.
+func TestIssueResolve_InProgressToClosed(t *testing.T) {
+	var patchedState string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "in_progress", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "in_progress", "current": "closed", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			patchedState = toString(body["state"])
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/resolve", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueResolve(rec, req)
+	assertRedirectsTo(t, rec, "/issues/1")
+	if patchedState != "closed" {
+		t.Errorf("expected state to be 'closed', got %q", patchedState)
 	}
 }
 
