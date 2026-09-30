@@ -396,6 +396,7 @@
   "issues.state.triaged": "En triaje",
   "issues.state.on_hold": "En espera",
   "issues.state.duplicate": "Duplicada",
+  "issues.reported_by": "Reportado por",
   "loading": "Cargando...",
   "login.email_placeholder": "tu@ejemplo.com",
   "login.error.account_disabled": "La cuenta está deshabilitada",

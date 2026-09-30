@@ -28,17 +28,19 @@ import (
 
 // Issue mirrors what's stored in the "issues" xolu entity.
 type Issue struct {
-	ID           int64
-	Title        string
-	Description  string
-	Priority     string // "critical" | "high" | "medium" | "low"
-	Severity     string // "critical" | "major" | "minor"
-	State        string // "reported" | "in_progress" | "closed"
-	RejectReason string
-	MachineID    int64
-	AssetID      int64
-	AssetName    string // resolved, not stored -- populated on read for display
-	CreatedAt    string
+	ID             int64
+	Title          string
+	Description    string
+	Priority       string // "critical" | "high" | "medium" | "low"
+	Severity       string // "critical" | "major" | "minor"
+	State          string // "reported" | "in_progress" | "closed"
+	RejectReason   string
+	MachineID      int64
+	AssetID        int64
+	AssetName      string // resolved, not stored -- populated on read for display
+	ReportedBy     int64  // user id of the reporter, stored on the entity
+	ReportedByName string // resolved, not stored -- populated on read for display
+	CreatedAt      string
 }
 
 const issueDefName = "seam_issue_lifecycle"
@@ -55,6 +57,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		MachineID:   toInt64(e.Data["machine_id"]),
 		AssetID:     toInt64(e.Data["asset_id"]),
 		CreatedAt:   toString(e.Data["created_at"]),
+		ReportedBy:  toInt64(e.Data["reported_by"]),
 	}
 }
 
@@ -116,6 +119,7 @@ func (h *UIHandler) IssueNew(w http.ResponseWriter, r *http.Request) {
 func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc()
 	ctx := r.Context()
+	
 
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -127,6 +131,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	priority := r.FormValue("priority")
 	severity := r.FormValue("severity")
 	csrfToken := h.GetCSRFToken(w, r)
+	currentUser := h.getCurrentUser(r)
 
 	if priority == "" {
 		priority = "medium"
@@ -175,6 +180,9 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if assetID, err := strconv.ParseInt(assetIDStr, 10, 64); err == nil && assetID > 0 {
 		issueData["asset_id"] = assetID
 	}
+	if currentUser != nil && currentUser.ID > 0 {   
+     	issueData["reported_by"] = currentUser.ID
+     }
 
 	entity, err := h.xoluClient.Create(ctx, "issues", issueData)
 	if err != nil {
@@ -208,6 +216,11 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 			issue.AssetName = toString(asset.Data["name"])
 		}
 	}
+	if issue.ReportedBy > 0 {   
+     	if u, err := h.xoluClient.Get(ctx, "users", issue.ReportedBy); err == nil {
+     		issue.ReportedByName = toString(u.Data["name"])
+     	}
+     }
 
 	data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r)}
 	h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
@@ -521,6 +534,12 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
 					))
 				}
+				if iss.ReportedByName != "" {   
+                 	children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+                 		b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
+                 		b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
+                 	))
+                 }
 				if data.WalkError != "" {
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
 						data.WalkError))

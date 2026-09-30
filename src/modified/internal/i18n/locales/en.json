@@ -396,6 +396,7 @@
   "issues.list_title": "Issues",
   "issues.new": "New Issue",
   "issues.no_asset": "No asset linked",
+  "issues.reported_by": "Reported by",
   "loading": "Loading...",
   "login.email_placeholder": "you@example.com",
   "login.error.account_disabled": "Account is disabled",
