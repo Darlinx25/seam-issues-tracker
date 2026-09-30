@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"strconv"
 	"time"
 
@@ -27,16 +28,17 @@ import (
 
 // Issue mirrors what's stored in the "issues" xolu entity.
 type Issue struct {
-	ID          int64
-	Title       string
-	Description string
-	Priority    string // "critical" | "high" | "medium" | "low"
-	Severity    string // "critical" | "major" | "minor"
-	State       string // "reported" | "in_progress" | "closed"
-	MachineID   int64
-	AssetID     int64
-	AssetName   string // resolved, not stored -- populated on read for display
-	CreatedAt   string
+	ID           int64
+	Title        string
+	Description  string
+	Priority     string // "critical" | "high" | "medium" | "low"
+	Severity     string // "critical" | "major" | "minor"
+	State        string // "reported" | "in_progress" | "closed"
+	RejectReason string
+	MachineID    int64
+	AssetID      int64
+	AssetName    string // resolved, not stored -- populated on read for display
+	CreatedAt    string
 }
 
 const issueDefName = "seam_issue_lifecycle"
@@ -49,6 +51,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		Priority:    toString(e.Data["priority"]),
 		Severity:    toString(e.Data["severity"]),
 		State:       toString(e.Data["state"]),
+		RejectReason:toString(e.Data["reject_reason"]), 
 		MachineID:   toInt64(e.Data["machine_id"]),
 		AssetID:     toInt64(e.Data["asset_id"]),
 		CreatedAt:   toString(e.Data["created_at"]),
@@ -257,6 +260,80 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// IssueRejectFormPage handles GET /issues/{id}/reject -- renders the
+// reject form. A reason is mandatory; enforced server-side on submit.
+func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) {
+	t := h.translateFunc()
+	ctx := r.Context()
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id == 0 {
+		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
+		return
+	}
+	entity, err := h.xoluClient.Get(ctx, "issues", id)
+	if err != nil {
+		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
+		return
+	}
+	data := IssueRejectData{Issue: issueFromEntity(entity), CSRFToken: h.GetCSRFToken(w, r)}
+	h.page.Render(w, r, t("issues.reject.title"), "/issues", IssueRejectPage(data, t))
+}
+
+// IssueReject handles POST /issues/{id}/reject -- walks the FSM machine
+// with input "reject" carrying the motivo as payload, then denormalizes
+// state and reject_reason onto the entity. An empty motivo re-renders
+// the form with an error and never touches the FSM.
+func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
+	t := h.translateFunc()
+	ctx := r.Context()
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id == 0 {
+		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+	motivo := strings.TrimSpace(r.FormValue("motivo"))
+
+	entity, err := h.xoluClient.Get(ctx, "issues", id)
+	if err != nil {
+		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
+		return
+	}
+	issue := issueFromEntity(entity)
+
+	if motivo == "" {
+		h.logger.Info("issue reject refused: motivo required", "id", id)
+		data := IssueRejectData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), Error: t("issues.reject.error.motivo_required")}
+		h.page.Render(w, r, t("issues.reject.title"), "/issues", IssueRejectPage(data, t))
+		return
+	}
+
+	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{
+		Input:   "reject",
+		Payload: map[string]interface{}{"motivo": motivo},
+	})
+	if err != nil {
+		h.logger.Info("issue reject walk failed", "id", id, "error", err)
+		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error()}
+		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
+		return
+	}
+
+	patchData := map[string]any{
+		"state":         result.Current,
+		"reject_reason": motivo,
+		"updated_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
+		h.logger.Error("issue rejected but patch failed", "id", id, "error", err)
+	}
+
+	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // ─── Pages ──────────────────────────────────────────────────────────────
 
 // IssuesListData holds data for the issues list page.
@@ -307,6 +384,16 @@ func issueStatusBadge(state string, t func(key string, args ...any) string) mi.H
 		return Badge(t("issues.state.in_progress"), "info")
 	case "closed":
 		return Badge(t("issues.state.closed"), "success")
+	case "triaged":
+		return Badge(t("issues.state.triaged"), "warning")
+	case "on_hold":
+		return Badge(t("issues.state.on_hold"), "warning")
+	case "resolved":
+		return Badge(t("issues.state.resolved"), "info")
+	case "rejected":
+		return Badge(t("issues.state.rejected"), "danger")
+	case "duplicate":
+		return Badge(t("issues.state.duplicate"), "danger")	
 	default:
 		return Badge(t("issues.state.reported"), "warning")
 	}
@@ -341,6 +428,58 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 						),
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
 							t("issues.action.create"),
+						),
+					),
+				)
+			})(b),
+		)
+	}
+}
+
+// IssueRejectData holds data for the reject-issue form page.
+type IssueRejectData struct {
+	Issue     Issue
+	CSRFToken string
+	Error     string
+}
+
+// IssueRejectPage renders the reject-issue form -- a reason is mandatory.
+func IssueRejectPage(data IssueRejectData, t func(key string, args ...any) string) mi.H {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
+	iss := data.Issue
+	return func(b *mi.Builder) mi.Node {
+		var children []interface{}
+		if data.Error != "" {
+			children = append(children, b.Div(mi.Class("text-sm text-red-600"), data.Error))
+		}
+		children = append(children,
+			b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), iss.Title),
+			b.Label(mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"), t("issues.reject.motivo")),
+			b.Textarea(
+				mi.Name("motivo"), mi.Required(),
+				mi.Class("mt-1 w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500"),
+				mi.Attr("rows", "3"),
+			),
+		)
+		return b.Div(mi.Class("space-y-6 max-w-2xl"),
+			b.Div(mi.Class("flex items-center gap-4"),
+				b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.ID)), mi.Class("text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"),
+					b.Span(mi.Class("material-icons"), "arrow_back"),
+				),
+				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.reject.title")),
+			),
+			Card("", func(b *mi.Builder) mi.Node {
+				return b.Form(mi.Class("space-y-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/reject", iss.ID)),
+					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+					b.Div(children...),
+					b.Div(mi.Class("flex justify-end gap-3 pt-4"),
+						b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.ID)), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
+							t("action.cancel"),
+						),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium"),
+							t("issues.action.reject"),
 						),
 					),
 				)
@@ -386,6 +525,10 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
 						data.WalkError))
 				}
+				if iss.RejectReason != "" {
+					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
+						t("issues.reject.motivo")+": "+iss.RejectReason,))
+				}
 				switch iss.State {
 				case "reported":
 					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
@@ -398,6 +541,12 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
 							t("issues.action.resolve")),
+					))
+				}
+				if iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
+						mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
+						t("issues.action.reject"),
 					))
 				}
 				return b.Div(children...)
