@@ -156,10 +156,11 @@ func TestIssueStart_ReportedToInProgress(t *testing.T) {
 	}
 }
 
-// TestIssueResolve_InProgressToClosed confirms /issues/{id}/resolve walks
+// TestIssueResolve_InProgressToResolved confirms /issues/{id}/resolve walks
 // the issue's FSM machine with input "resolve", then denormalizes the
-// new state onto the entity.
-func TestIssueResolve_InProgressToClosed(t *testing.T) {
+// new state onto the entity. resolve now lands on "resolved"; the separate
+// close transition (resolved -> closed) is covered by the close action.
+func TestIssueResolve_InProgressToResolved(t *testing.T) {
 	var patchedState string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +169,7 @@ func TestIssueResolve_InProgressToClosed(t *testing.T) {
 		},
 		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"previous": "in_progress", "current": "closed", "terminal": true})
+			json.NewEncoder(w).Encode(map[string]any{"previous": "in_progress", "current": "resolved", "terminal": false})
 		},
 		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
@@ -186,8 +187,8 @@ func TestIssueResolve_InProgressToClosed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.IssueResolve(rec, req)
 	assertRedirectsTo(t, rec, "/issues/1")
-	if patchedState != "closed" {
-		t.Errorf("expected state to be 'closed', got %q", patchedState)
+	if patchedState != "resolved" {
+		t.Errorf("expected state to be 'resolved', got %q", patchedState)
 	}
 }
 

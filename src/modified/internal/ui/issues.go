@@ -20,9 +20,9 @@ import (
 	"time"
 
 	mi "github.com/ha1tch/minty"
-	xolu "github.com/ha1tch/xolu/pkg/client"
 	fe "github.com/ha1tch/seam-ui/internal/formengine"
 	issueschemas "github.com/ha1tch/seam-ui/internal/formengine/schemas/issues"
+	xolu "github.com/ha1tch/xolu/pkg/client"
 )
 
 // Issue mirrors what's stored in the "issues" xolu entity.
@@ -65,14 +65,14 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		for _, row := range result.Data {
 			issues = append(issues, Issue{
-			ID:        toInt64(row["id"]),
-			Title:     toString(row["title"]),
-			Priority:  toString(row["priority"]),
-			Severity:  toString(row["severity"]),
-			State:     toString(row["state"]),
-			MachineID: toInt64(row["machine_id"]),
-			AssetID:   toInt64(row["asset_id"]),
-		})
+				ID:        toInt64(row["id"]),
+				Title:     toString(row["title"]),
+				Priority:  toString(row["priority"]),
+				Severity:  toString(row["severity"]),
+				State:     toString(row["state"]),
+				MachineID: toInt64(row["machine_id"]),
+				AssetID:   toInt64(row["asset_id"]),
+			})
 		}
 	} else {
 		h.logger.Error("failed to list issues", "error", err)
@@ -384,21 +384,21 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				}
 				if data.WalkError != "" {
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
-					data.WalkError,))
+						data.WalkError))
 				}
 				switch iss.State {
-					case "reported":
-						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
+				case "reported":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-						t("issues.action.start"),),
-						))
-					case "in_progress":
-						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
+							t("issues.action.start")),
+					))
+				case "in_progress":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-						t("issues.action.resolve"),),
-						))
+							t("issues.action.resolve")),
+					))
 				}
 				return b.Div(children...)
 			})(b),
@@ -420,19 +420,30 @@ func (h *UIHandler) ensureIssueFSMDefinition(ctx context.Context) (int64, error)
 	}
 
 	result, err := h.xoluClient.CreateMachineDef(ctx, xolu.MachineSpec{
-			Name:        issueDefName,
-			Description: "Seam AMS Issues lifecycle (v3 minimal slice)",
-			Initial:     "reported",
-			Determinism: "firstmatch",
-			States: map[string]xolu.StateDef{
-				"reported":    {Terminal: false},
-				"in_progress": {Terminal: false},
-				"closed":      {Terminal: true},
-			},
-			Transitions: []xolu.TransitionDef{
-				{From: json.RawMessage(`"reported"`), Input: "start", To: "in_progress"},
-				{From: json.RawMessage(`"in_progress"`), Input: "resolve", To: "closed"},
-			},
+		Name:        issueDefName,
+		Description: "Seam AMS Issues lifecycle (8 states, iteration 1)",
+		Initial:     "reported",
+		Determinism: "firstmatch",
+		States: map[string]xolu.StateDef{
+			"reported":    {Terminal: false},
+			"triaged":     {Terminal: false},
+			"in_progress": {Terminal: false},
+			"on_hold":     {Terminal: false},
+			"resolved":    {Terminal: false},
+			"closed":      {Terminal: true},
+			"rejected":    {Terminal: true},
+			"duplicate":   {Terminal: true},
+		},
+		Transitions: []xolu.TransitionDef{
+			{From: json.RawMessage(`"reported"`), Input: "triage", To: "triaged"},
+			{From: json.RawMessage(`["reported","triaged"]`), Input: "start", To: "in_progress"},
+			{From: json.RawMessage(`["triaged","in_progress"]`), Input: "hold", To: "on_hold"},
+			{From: json.RawMessage(`"on_hold"`), Input: "resume", To: "in_progress"},
+			{From: json.RawMessage(`"in_progress"`), Input: "resolve", To: "resolved"},
+			{From: json.RawMessage(`"resolved"`), Input: "close", To: "closed"},
+			{From: json.RawMessage(`["reported","triaged","in_progress","on_hold","resolved"]`), Input: "reject", To: "rejected"},
+			{From: json.RawMessage(`["reported","triaged","in_progress"]`), Input: "merge", To: "duplicate"},
+		},
 	})
 	if err != nil {
 		return 0, err
