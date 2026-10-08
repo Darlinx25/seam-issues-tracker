@@ -236,6 +236,11 @@ func (h *UIHandler) IssueResolve(w http.ResponseWriter, r *http.Request) {
 	h.IssueTransition(w, r, "resolve")
 }
 
+// IssueClose handles POST /issues/{id}/close -- walks from "resolved" to "closed".
+func (h *UIHandler) IssueClose(w http.ResponseWriter, r *http.Request) {
+	h.IssueTransition(w, r, "close")
+}
+
 // IssueTransition is the shared fetch-walk-denormalize sequence.
 func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, input string) {
 	t := h.translateFunc()
@@ -561,6 +566,12 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
 							t("issues.action.resolve")),
 					))
+				case "resolved":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+							t("issues.action.close")),
+					))	
 				}
 				if iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
 					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),

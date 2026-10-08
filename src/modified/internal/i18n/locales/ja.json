@@ -373,6 +373,7 @@
   "general.locale.ja": "日本語",
   "general.locale.pt": "ポルトガル語",
   "issues.action.create": "問題を作成",
+  "issues.action.close": "クローズ",
   "issues.action.resolve": "解決",
   "issues.action.start": "開始",
   "issues.action.reject": "却下",

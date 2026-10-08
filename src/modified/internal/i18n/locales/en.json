@@ -381,6 +381,7 @@
   "issues.state.rejected": "Rejected",
   "issues.state.duplicate": "Duplicate",
   "issues.action.create": "Create Issue",
+  "issues.action.close": "Close",
   "issues.action.start": "Start",
   "issues.action.resolve": "Resolve",
   "issues.action.reject": "Reject",

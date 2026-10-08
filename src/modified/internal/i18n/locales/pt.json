@@ -373,6 +373,7 @@
   "general.locale.ja": "Japonês",
   "general.locale.pt": "Português",
   "issues.action.create": "Criar Ocorrência",
+  "issues.action.close": "Fechar",
   "issues.action.resolve": "Resolver",
   "issues.action.start": "Iniciar",
   "issues.action.reject": "Rejeitar",
