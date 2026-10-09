@@ -385,6 +385,7 @@
   "issues.action.start": "Start",
   "issues.action.resolve": "Resolve",
   "issues.action.reject": "Reject",
+  "issues.all": "All",
   "issues.reject.title": "Reject Issue",
   "issues.reject.motivo": "Reason for rejection",
   "issues.reject.error.motivo_required": "A reason is required",

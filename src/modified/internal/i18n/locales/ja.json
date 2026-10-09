@@ -377,6 +377,7 @@
   "issues.action.resolve": "解決",
   "issues.action.start": "開始",
   "issues.action.reject": "却下",
+  "issues.all": "すべて",
   "issues.reject.title": "インシデンスの却下",
   "issues.reject.motivo": "却下の理由",
   "issues.reject.error.motivo_required": "理由は必須です",

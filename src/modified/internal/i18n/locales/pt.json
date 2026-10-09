@@ -377,6 +377,7 @@
   "issues.action.resolve": "Resolver",
   "issues.action.start": "Iniciar",
   "issues.action.reject": "Rejeitar",
+  "issues.all": "Todos",
   "issues.reject.title": "Rejeitar ocorrência",
   "issues.reject.motivo": "Motivo da rejeição",
   "issues.reject.error.motivo_required": "O motivo é obrigatório",

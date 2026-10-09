@@ -16,8 +16,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	mi "github.com/ha1tch/minty"
@@ -47,17 +47,17 @@ const issueDefName = "seam_issue_lifecycle"
 
 func issueFromEntity(e *xolu.Entity) Issue {
 	return Issue{
-		ID:          e.ID,
-		Title:       toString(e.Data["title"]),
-		Description: toString(e.Data["description"]),
-		Priority:    toString(e.Data["priority"]),
-		Severity:    toString(e.Data["severity"]),
-		State:       toString(e.Data["state"]),
-		RejectReason:toString(e.Data["reject_reason"]), 
-		MachineID:   toInt64(e.Data["machine_id"]),
-		AssetID:     toInt64(e.Data["asset_id"]),
-		CreatedAt:   toString(e.Data["created_at"]),
-		ReportedBy:  toInt64(e.Data["reported_by"]),
+		ID:           e.ID,
+		Title:        toString(e.Data["title"]),
+		Description:  toString(e.Data["description"]),
+		Priority:     toString(e.Data["priority"]),
+		Severity:     toString(e.Data["severity"]),
+		State:        toString(e.Data["state"]),
+		RejectReason: toString(e.Data["reject_reason"]),
+		MachineID:    toInt64(e.Data["machine_id"]),
+		AssetID:      toInt64(e.Data["asset_id"]),
+		CreatedAt:    toString(e.Data["created_at"]),
+		ReportedBy:   toInt64(e.Data["reported_by"]),
 	}
 }
 
@@ -66,7 +66,60 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc()
 	ctx := r.Context()
 
-	result, err := h.xoluClient.OQL(ctx, "SELECT TOP 100 * FROM issues ORDER BY id DESC")
+	// Allowed states (8-state lifecycle). Whitelist to avoid SQL injection via param.
+	allowedStates := map[string]bool{
+		"reported":    true,
+		"triaged":     true,
+		"in_progress": true,
+		"on_hold":     true,
+		"resolved":    true,
+		"closed":      true,
+		"rejected":    true,
+		"duplicate":   true,
+	}
+
+	stateFilter := r.URL.Query().Get("state")
+	if !allowedStates[stateFilter] {
+		stateFilter = ""
+	}
+
+	// 1) Counts per state (all issues, not paged) to populate tabs
+	counts := map[string]int{
+		"reported":    0,
+		"triaged":     0,
+		"in_progress": 0,
+		"on_hold":     0,
+		"resolved":    0,
+		"closed":      0,
+		"rejected":    0,
+		"duplicate":   0,
+	}
+	if groupRes, err := h.xoluClient.OQL(ctx, "SELECT state, COUNT(*) AS c FROM issues GROUP BY state"); err == nil {
+		for _, row := range groupRes.Data {
+			st := toString(row["state"])
+			if allowedStates[st] {
+				if v, ok := row["c"].(float64); ok {
+					counts[st] = int(v)
+				} else {
+					counts[st] = int(toInt64(row["c"]))
+				}
+			}
+		}
+	} else {
+		h.logger.Error("failed to count issues by state", "error", err)
+	}
+
+	// 2) List issues (filtered if stateFilter set). Keep TOP 100 and id DESC (existing behavior).
+	var listQuery string
+	if stateFilter == "" {
+		listQuery = "SELECT TOP 100 * FROM issues ORDER BY id DESC"
+	} else {
+		// Quote state (validated against whitelist). escapeOQL exists but enum is safe; quote-doubling is harmless.
+		escaped := escapeOQL(stateFilter)
+		listQuery = "SELECT TOP 100 * FROM issues WHERE state = '" + escaped + "' ORDER BY id DESC"
+	}
+
+	result, err := h.xoluClient.OQL(ctx, listQuery)
 	var issues []Issue
 	if err == nil {
 		for _, row := range result.Data {
@@ -84,11 +137,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to list issues", "error", err)
 	}
 
-	// Resolve linked asset names for display -- a small number of
-	// issues per page (TOP 100), one Get per linked asset is
-	// acceptable here; not worth a join/batch fetch for a "simple"
-	// module's list page. asset_id itself already came from the
-	// SELECT * above, no need to re-query for it per row.
+	// 3) Resolve linked asset names (unchanged behavior)
 	for i := range issues {
 		if issues[i].AssetID > 0 {
 			if asset, err := h.xoluClient.Get(ctx, "assets", issues[i].AssetID); err == nil {
@@ -97,7 +146,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := IssuesListData{Issues: issues}
+	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts}
 	h.page.Render(w, r, t("issues.list_title"), "/issues", IssuesListPage(data, t))
 }
 
@@ -119,7 +168,6 @@ func (h *UIHandler) IssueNew(w http.ResponseWriter, r *http.Request) {
 func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc()
 	ctx := r.Context()
-	
 
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -180,9 +228,9 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if assetID, err := strconv.ParseInt(assetIDStr, 10, 64); err == nil && assetID > 0 {
 		issueData["asset_id"] = assetID
 	}
-	if currentUser != nil && currentUser.ID > 0 {   
-     	issueData["reported_by"] = currentUser.ID
-     }
+	if currentUser != nil && currentUser.ID > 0 {
+		issueData["reported_by"] = currentUser.ID
+	}
 
 	entity, err := h.xoluClient.Create(ctx, "issues", issueData)
 	if err != nil {
@@ -216,11 +264,11 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 			issue.AssetName = toString(asset.Data["name"])
 		}
 	}
-	if issue.ReportedBy > 0 {   
-     	if u, err := h.xoluClient.Get(ctx, "users", issue.ReportedBy); err == nil {
-     		issue.ReportedByName = toString(u.Data["name"])
-     	}
-     }
+	if issue.ReportedBy > 0 {
+		if u, err := h.xoluClient.Get(ctx, "users", issue.ReportedBy); err == nil {
+			issue.ReportedByName = toString(u.Data["name"])
+		}
+	}
 
 	data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r)}
 	h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
@@ -352,11 +400,13 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
-// ─── Pages ──────────────────────────────────────────────────────────────
+// â”€â”€â”€ Pages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // IssuesListData holds data for the issues list page.
 type IssuesListData struct {
-	Issues []Issue
+	Issues      []Issue
+	StateFilter string
+	Counts      map[string]int
 }
 
 // IssuesListPage renders the issues list page.
@@ -377,7 +427,54 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			Badge:    issueStatusBadge(iss.State, t),
 		}
 	}
+
+	// States order (logical lifecycle)
+	statesOrder := []string{
+		"reported",
+		"triaged",
+		"in_progress",
+		"on_hold",
+		"resolved",
+		"closed",
+		"rejected",
+		"duplicate",
+	}
+
 	return func(b *mi.Builder) mi.Node {
+		// Build filter tabs
+		var tabs []interface{}
+		// "All" tab
+		allCount := 0
+		if data.Counts != nil {
+			for _, c := range data.Counts {
+				allCount += c
+			}
+		}
+		allActive := data.StateFilter == ""
+		allClasses := "px-3 py-1.5 text-sm rounded-lg border transition-colors "
+		if allActive {
+			allClasses += "bg-indigo-600 text-white border-indigo-600"
+		} else {
+			allClasses += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
+		}
+		tabs = append(tabs, b.A(mi.Href("/issues"), mi.Class(allClasses), t("issues.all"), " (", strconv.Itoa(allCount), ")"))
+
+		for _, st := range statesOrder {
+			c := 0
+			if data.Counts != nil {
+				c = data.Counts[st]
+			}
+			active := data.StateFilter == st
+			cls := "px-3 py-1.5 text-sm rounded-lg border transition-colors "
+			if active {
+				cls += "bg-indigo-600 text-white border-indigo-600"
+			} else {
+				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
+			}
+			label := t("issues.state." + st)
+			tabs = append(tabs, b.A(mi.Href("/issues?state="+st), mi.Class(cls), label, " (", strconv.Itoa(c), ")"))
+		}
+
 		return b.Div(mi.Class("space-y-6"),
 			b.Div(mi.Class("flex items-center justify-between"),
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.list_title")),
@@ -385,6 +482,8 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 					t("issues.new"),
 				),
 			),
+			// Filter bar
+			b.Div(append([]interface{}{mi.Class("flex flex-wrap gap-2")}, tabs...)...),
 			SimpleListCard(items, t("issues.empty"))(b),
 		)
 	}
@@ -411,7 +510,7 @@ func issueStatusBadge(state string, t func(key string, args ...any) string) mi.H
 	case "rejected":
 		return Badge(t("issues.state.rejected"), "danger")
 	case "duplicate":
-		return Badge(t("issues.state.duplicate"), "danger")	
+		return Badge(t("issues.state.duplicate"), "danger")
 	default:
 		return Badge(t("issues.state.reported"), "warning")
 	}
@@ -539,19 +638,19 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
 					))
 				}
-				if iss.ReportedByName != "" {   
-                 	children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-                 		b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
-                 		b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
-                 	))
-                 }
+				if iss.ReportedByName != "" {
+					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
+						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
+					))
+				}
 				if data.WalkError != "" {
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
 						data.WalkError))
 				}
 				if iss.RejectReason != "" {
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
-						t("issues.reject.motivo")+": "+iss.RejectReason,))
+						t("issues.reject.motivo")+": "+iss.RejectReason))
 				}
 				switch iss.State {
 				case "reported":
@@ -571,7 +670,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
 							t("issues.action.close")),
-					))	
+					))
 				}
 				if iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
 					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
