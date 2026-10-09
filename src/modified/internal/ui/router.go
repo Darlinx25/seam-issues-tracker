@@ -49,7 +49,6 @@ func NewRouter(client *xolu.Client, cfg Config, translator *i18n.Translator, use
 // PageHandler.SetModuleRegistry itself gives for being a setter rather
 // than a constructor parameter: not disrupting NewRouter's already-long
 // signature for a stage (MOD-4) that doesn't require every caller to
-// 
 // supply one.
 func (r *Router) SetModuleRegistry(reg *modules.Registry) {
 	r.handler.page.SetModuleRegistry(reg)
@@ -202,6 +201,13 @@ func (r *Router) registerRoutes() {
 	// that reason -- it doesn't belong to Assets, Sensors, or any
 	// other single module more than the others.
 	r.mux.HandleFunc("GET /picker/search", r.requireAuth(r.handler.PickerSearch))
+
+	// Selector dialog (T-96) -- a generic "choose one record" modal body,
+	// registry-driven (selectorSources in selector.go). Open to every
+	// authenticated role; what each source lists is restricted inside the
+	// source itself (the Users source lists only users at or below the
+	// caller's role). Same cross-module reasoning as /picker/search above.
+	r.mux.HandleFunc("GET /selector/{key}", r.requireAuth(r.handler.Selector))
 
 	// Gallery — backend for the "image" formengine widget (T-10), same
 	// reasoning as /picker/search directly above: a generic, cross-
@@ -381,7 +387,7 @@ func (r *Router) MountAssetRoutes(mux *http.ServeMux) {
 	if r.config.EnableAdmin {
 		// Rules Editor (Rete.js node graph)
 
-		// FSM Editor (Evan Wallace canvas)
+		// FSM Editor (canvas)
 		mux.HandleFunc("GET /fsm/editor", r.requirePerm(auth.PermAssetsRuleCreate, r.handler.FSMEditorNew))
 		mux.HandleFunc("GET /fsm/editor/{id}", r.requireAuth(r.handler.FSMEditorEdit))
 		mux.HandleFunc("POST /fsm/export/png", r.requireAuthRawBody(r.handler.FSMExportPNG))
@@ -496,6 +502,17 @@ func (r *Router) MountWorkOrdersRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workorders/{id}", r.requireAuth(r.handler.WorkOrderDetail))
 	mux.HandleFunc("POST /workorders/{id}/start", r.requireAuth(r.handler.WorkOrderStart))
 	mux.HandleFunc("POST /workorders/{id}/complete", r.requireAuth(r.handler.WorkOrderComplete))
+}
+
+// MountDemoRoutes registers the Demo module's routes, gated behind
+// r.config.EnableDemo (default false, see internal/config's field doc).
+// requireAuth only: any authenticated role may open the demo once enabled.
+func (r *Router) MountDemoRoutes(mux *http.ServeMux) {
+	if !r.config.EnableDemo {
+		return
+	}
+	mux.HandleFunc("GET /demo", r.requireAuth(r.handler.DemoIndex))
+	mux.HandleFunc("POST /demo/echo", r.requireAuth(r.handler.DemoEcho))
 }
 
 // MountIssuesRoutes registers the Issue Tracker module's routes
