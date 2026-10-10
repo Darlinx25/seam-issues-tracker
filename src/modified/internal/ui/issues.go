@@ -41,6 +41,12 @@ type Issue struct {
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
 	CreatedAt      string
+
+	// TemplateID is the specific template version the issue was created
+	// with; FormData holds the custom field values it captured. Both are
+	// frozen onto the issue so later template edits don't alter history.
+	TemplateID int64
+	FormData   map[string]any
 }
 
 const issueDefName = "seam_issue_lifecycle"
@@ -58,6 +64,8 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		AssetID:      toInt64(e.Data["asset_id"]),
 		CreatedAt:    toString(e.Data["created_at"]),
 		ReportedBy:   toInt64(e.Data["reported_by"]),
+		TemplateID:   toInt64(e.Data["template_id"]),
+		FormData:     toMap(e.Data["form_data"]),
 	}
 }
 
@@ -188,16 +196,39 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		severity = "minor"
 	}
 
+	// Resolve the template assigned to the selected asset's type (if any)
+	// and collect its custom field values.
+	assetID := toInt64FromString(assetIDStr)
+	var tpl *IssueTemplate
+	if assetID > 0 {
+		tpl = h.resolveIssueTemplate(ctx, assetID)
+	}
+	formData := map[string]any{}
+	fieldErrors := map[string]string{}
+	if tpl != nil {
+		for _, f := range tpl.Fields {
+			v := r.FormValue(f.Key)
+			formData[f.Key] = v
+			if f.Required && strings.TrimSpace(v) == "" {
+				fieldErrors[f.Key] = t("field.required")
+			}
+		}
+	}
+
 	errors := map[string]string{}
 	if title == "" {
 		errors["title"] = t("issues.error.title_required")
 	}
-	if len(errors) > 0 {
+	if len(errors) > 0 || len(fieldErrors) > 0 {
 		formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 		rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
 		formContent := formEng.Render(ctx, issueschemas.Schema("create"),
 			map[string]interface{}{"title": title, "description": description, "asset_id": assetIDStr, "priority": priority, "severity": severity}, errors, rc)
-		data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent, Errors: errors}
+		var tplContent mi.H
+		if tpl != nil && len(tpl.Fields) > 0 {
+			tplContent = h.renderTemplateFields(ctx, tpl, formData, fieldErrors, csrfToken)
+		}
+		data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent, Errors: errors, TemplateFieldsContent: tplContent}
 		h.page.Render(w, r, t("issues.new"), "/issues", IssueFormPage(data, t))
 		return
 	}
@@ -225,8 +256,12 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		"machine_id":  machine.ID,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
 	}
-	if assetID, err := strconv.ParseInt(assetIDStr, 10, 64); err == nil && assetID > 0 {
+	if assetID > 0 {
 		issueData["asset_id"] = assetID
+	}
+	if tpl != nil {
+		issueData["template_id"] = tpl.ID
+		issueData["form_data"] = formData
 	}
 	if currentUser != nil && currentUser.ID > 0 {
 		issueData["reported_by"] = currentUser.ID
@@ -271,6 +306,19 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r)}
+	if issue.TemplateID > 0 {
+		if tplEntity, err := h.xoluClient.Get(ctx, issueTemplatesEntity, issue.TemplateID); err == nil {
+			tpl := issueTemplateFromRow(tplEntity.Data)
+			data.TemplateName = tpl.Name
+			for _, f := range tpl.Fields {
+				data.FormFields = append(data.FormFields, IssueFormField{
+					Key:   f.Key,
+					Label: f.Label,
+					Value: toString(issue.FormData[f.Key]),
+				})
+			}
+		}
+	}
 	h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 }
 
@@ -519,6 +567,12 @@ type IssueFormData struct {
 	CSRFToken   string
 	FormContent mi.H
 	Errors      map[string]string
+
+	// TemplateFieldsContent is the pre-rendered custom-field block of the
+	// resolved template, used when re-rendering after a validation error so
+	// the values seen before submit are preserved. Nil on a fresh GET, where
+	// the block is loaded over HTMX from the asset picker.
+	TemplateFieldsContent mi.H
 }
 
 // IssueFormPage renders the create-issue form.
@@ -535,8 +589,19 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.new")),
 			),
 			Card("", func(b *mi.Builder) mi.Node {
+				tplFields := []interface{}{
+					mi.ID("issue-template-fields"),
+					mi.Attr("hx-get", "/issue-templates/fields"),
+					mi.Attr("hx-trigger", "change from:#field-asset_id"),
+					mi.Attr("hx-target", "this"),
+					mi.Attr("hx-include", "#field-asset_id"),
+				}
+				if data.TemplateFieldsContent != nil {
+					tplFields = append(tplFields, data.TemplateFieldsContent(b))
+				}
 				return b.Form(mi.Class("space-y-4"), mi.Method("post"), mi.Action("/issues"),
 					data.FormContent(b),
+					b.Div(tplFields...),
 					b.Div(mi.Class("flex justify-end gap-3 pt-4"),
 						b.A(mi.Href("/issues"), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
 							t("action.cancel"),
@@ -603,11 +668,21 @@ func IssueRejectPage(data IssueRejectData, t func(key string, args ...any) strin
 	}
 }
 
+// IssueFormField is one resolved custom-template field for display: label
+// shown, key used, and the value captured at creation.
+type IssueFormField struct {
+	Key   string
+	Label string
+	Value string
+}
+
 // IssueDetailData holds data for the issue detail page.
 type IssueDetailData struct {
-	Issue     Issue
-	CSRFToken string
-	WalkError string
+	Issue        Issue
+	CSRFToken    string
+	WalkError    string
+	TemplateName string
+	FormFields   []IssueFormField
 }
 
 // IssueDetailPage renders the issue detail page.
@@ -641,6 +716,27 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
 						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
 					))
+				}
+				if data.TemplateName != "" {
+					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.template_label")+": "),
+						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.TemplateName),
+					))
+				}
+				if len(data.FormFields) > 0 {
+					var fieldRows []interface{}
+					fieldRows = append(fieldRows, b.H3(mi.Class("text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"), t("issues.form_data")))
+					for _, f := range data.FormFields {
+						label := f.Label
+						if label == "" {
+							label = f.Key
+						}
+						fieldRows = append(fieldRows, b.Div(mi.Class("flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
+							b.Span(mi.Class("text-sm text-gray-500 dark:text-gray-400"), label),
+							b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), f.Value),
+						))
+					}
+					children = append(children, b.Div(append([]interface{}{mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700")}, fieldRows...)...))
 				}
 				if data.WalkError != "" {
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
