@@ -595,3 +595,293 @@ func TestIssueTemplateRoutes_Register(t *testing.T) {
 	mux := http.NewServeMux()
 	router.MountIssuesRoutes(mux)
 }
+
+// TestIssueCreate_BootstrapsEightStateFSMDefinition confirms the lazy
+// bootstrap creates seam_issue_lifecycle with the full 8-state lifecycle
+// (iteration 1): 3 terminal states and the 8 named transitions, not a
+// reduced slice.
+func TestIssueCreate_BootstrapsEightStateFSMDefinition(t *testing.T) {
+	var spec map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{}})
+		},
+		"POST /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&spec)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "name": "seam_issue_lifecycle"})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"Bootstraps the FSM"}})
+	assertRedirectsTo(t, rec, "/issues/1")
+
+	if spec == nil {
+		t.Fatal("expected the FSM definition to be created when none exists")
+	}
+	if spec["name"] != "seam_issue_lifecycle" || spec["initial"] != "reported" || spec["determinism"] != "firstmatch" {
+		t.Fatalf("unexpected spec header: name=%v initial=%v determinism=%v", spec["name"], spec["initial"], spec["determinism"])
+	}
+	states, ok := spec["states"].(map[string]any)
+	if !ok || len(states) != 8 {
+		t.Fatalf("expected 8 states, got %v", spec["states"])
+	}
+	for _, terminal := range []string{"closed", "rejected", "duplicate"} {
+		st, ok := states[terminal].(map[string]any)
+		if !ok || st["terminal"] != true {
+			t.Errorf("expected %q to be terminal, got %v", terminal, states[terminal])
+		}
+	}
+	transitions, ok := spec["transitions"].([]any)
+	if !ok {
+		t.Fatalf("expected a transitions array, got %v", spec["transitions"])
+	}
+	inputs := map[string]bool{}
+	for _, tr := range transitions {
+		if m, ok := tr.(map[string]any); ok {
+			inputs[toString(m["input"])] = true
+		}
+	}
+	for _, in := range []string{"triage", "start", "hold", "resume", "resolve", "close", "reject", "merge"} {
+		if !inputs[in] {
+			t.Errorf("expected transition input %q in the spec", in)
+		}
+	}
+}
+
+// TestIssuesList_FiltersByState confirms a whitelisted ?state= filter is
+// pushed into the list OQL as a WHERE clause, with the counts query kept
+// separate.
+func TestIssuesList_FiltersByState(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{
+						{"state": "in_progress", "c": float64(2)},
+						{"state": "reported", "c": float64(1)},
+					}
+				}
+				listQuery = q
+				return []map[string]any{
+					{"id": float64(3), "title": "Belt slipping", "state": "in_progress"},
+					{"id": float64(2), "title": "Motor hot", "state": "in_progress"},
+				}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?state=in_progress", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(listQuery, "WHERE state = 'in_progress'") {
+		t.Errorf("expected the list OQL to filter by state, got %q", listQuery)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Belt slipping") {
+		t.Error("expected the filtered issue title to render")
+	}
+	if !strings.Contains(body, "state=in_progress") {
+		t.Error("expected the active filter tab link to render")
+	}
+}
+
+// TestIssuesList_InvalidStateFilterIgnored confirms a non-whitelisted
+// ?state= value is dropped rather than reaching the OQL.
+func TestIssuesList_InvalidStateFilterIgnored(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				listQuery = q
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?state=bogus", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(listQuery, "WHERE") {
+		t.Errorf("expected no WHERE clause for a non-whitelisted state, got %q", listQuery)
+	}
+}
+
+// TestIssueClose_ResolvedToClosed confirms /issues/{id}/close walks the
+// machine with input "close" and denormalizes the terminal state.
+func TestIssueClose_ResolvedToClosed(t *testing.T) {
+	var patchedState string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "resolved", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "resolved", "current": "closed", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			patchedState = toString(body["state"])
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/close", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueClose(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if patchedState != "closed" {
+		t.Errorf("expected state to be 'closed', got %q", patchedState)
+	}
+}
+
+// TestIssueReject_RequiresMotivo confirms an empty reason re-renders the
+// reject form with an error and never walks the FSM.
+func TestIssueReject_RequiresMotivo(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Broken", "state": "reported", "machine_id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"motivo": {""}}
+	req := httptest.NewRequest("POST", "/issues/1/reject", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueReject(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (re-render with error), got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "issues.reject.error.motivo_required") {
+		t.Error("expected the motivo-required error to be rendered (no walk, no state change)")
+	}
+}
+
+// TestIssueReject_WithMotivo_WalksWithPayload confirms a non-empty reason
+// is carried as the walk payload and denormalized (state + reject_reason).
+func TestIssueReject_WithMotivo_WalksWithPayload(t *testing.T) {
+	const motivo = "duplicado de #12"
+	var walkBody struct {
+		Input   string                 `json:"input"`
+		Payload map[string]interface{} `json:"payload"`
+	}
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Broken", "state": "reported", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&walkBody)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "reported", "current": "rejected", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"motivo": {motivo}}
+	req := httptest.NewRequest("POST", "/issues/1/reject", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueReject(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkBody.Input != "reject" {
+		t.Errorf("expected walk input 'reject', got %q", walkBody.Input)
+	}
+	if walkBody.Payload["motivo"] != motivo {
+		t.Errorf("expected payload.motivo=%q, got %v", motivo, walkBody.Payload["motivo"])
+	}
+	if patched["state"] != "rejected" || patched["reject_reason"] != motivo {
+		t.Errorf("expected state=rejected and reject_reason set, got %v", patched)
+	}
+}
+
+// TestIssuesList_RendersAllStateTabsWithCounts confirms the filter bar
+// renders one tab per lifecycle state (8) plus the "all" tab, each with
+// its own count from the GROUP BY query.
+func TestIssuesList_RendersAllStateTabsWithCounts(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{
+						{"state": "reported", "c": float64(1)},
+						{"state": "in_progress", "c": float64(2)},
+					}
+				}
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, st := range []string{"reported", "triaged", "in_progress", "on_hold", "resolved", "closed", "rejected", "duplicate"} {
+		if !strings.Contains(body, "issues.state."+st) {
+			t.Errorf("expected a tab for state %q", st)
+		}
+	}
+	if !strings.Contains(body, "issues.state.in_progress (2)") {
+		t.Error("expected the in_progress tab to show its count (2)")
+	}
+	if !strings.Contains(body, "issues.all (3)") {
+		t.Error("expected the all tab to show the summed count (3)")
+	}
+}
