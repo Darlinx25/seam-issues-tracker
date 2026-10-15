@@ -69,6 +69,40 @@ func issueFromEntity(e *xolu.Entity) Issue {
 	}
 }
 
+// assetCategoryFromCriticality maps an asset's criticality to the issue's
+// stored asset_category, per the canonical table (ROADMAP section 4):
+// High -> "critico"; Medium/Low -> "normal". Any unrecognised value
+// (including the empty string) defaults to "normal".
+func assetCategoryFromCriticality(criticality string) string {
+	switch criticality {
+	case "High":
+		return "critico"
+	case "Medium", "Low":
+		return "normal"
+	default:
+		return "normal"
+	}
+}
+
+// resolveAssetCategory reads the linked asset's stored criticality and
+// resolves its category (see assetCategoryFromCriticality). The assets
+// entity persists criticality in Spanish ("Alta"/"Media"/"Baja"), so the
+// stored value is normalised to the canonical English token first through
+// the existing asset enum bridge. Returns "normal" when there is no asset,
+// when the asset cannot be read, or when criticality is unrecognised.
+func (h *UIHandler) resolveAssetCategory(ctx context.Context, assetID int64) string {
+	if assetID <= 0 {
+		return "normal"
+	}
+	asset, err := h.xoluClient.Get(ctx, "assets", assetID)
+	if err != nil {
+		return "normal"
+	}
+	raw := toString(asset.Data["criticality"])
+	canonical := toString(translateAssetEnumValue("criticality", raw, false))
+	return assetCategoryFromCriticality(canonical)
+}
+
 // IssuesList handles GET /issues.
 func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
@@ -272,6 +306,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if assetID > 0 {
 		issueData["asset_id"] = assetID
 	}
+	issueData["asset_category"] = h.resolveAssetCategory(ctx, assetID)
 	if tpl != nil {
 		issueData["template_id"] = tpl.ID
 		issueData["form_data"] = formData

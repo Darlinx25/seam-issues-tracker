@@ -885,3 +885,93 @@ func TestIssuesList_RendersAllStateTabsWithCounts(t *testing.T) {
 		t.Error("expected the all tab to show the summed count (3)")
 	}
 }
+
+func TestAssetCategoryFromCriticality(t *testing.T) {
+	cases := []struct {
+		criticality string
+		want        string
+	}{
+		{"High", "critico"},
+		{"Medium", "normal"},
+		{"Low", "normal"},
+		{"", "normal"},
+		{"Extrema", "normal"}, // unrecognised -> default
+	}
+	for _, c := range cases {
+		if got := assetCategoryFromCriticality(c.criticality); got != c.want {
+			t.Errorf("assetCategoryFromCriticality(%q) = %q, want %q", c.criticality, got, c.want)
+		}
+	}
+}
+
+func TestIssueCreate_WithAsset_SetsAssetCategoryCritical(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/assets/7": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(7), "name": "Pump 1", "type_id": float64(3), "criticality": "Alta"})
+		},
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any { return nil })
+		},
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
+		"title":    {"Pump making noise"},
+		"asset_id": {"7"},
+	})
+	assertRedirectsTo(t, rec, "/issues/1")
+	if created == nil {
+		t.Fatal("xolu.Create for issues was never called")
+	}
+	if created["asset_category"] != "critico" {
+		t.Errorf("expected asset_category=critico for a critical asset, got %v", created["asset_category"])
+	}
+}
+
+func TestIssueCreate_WithoutAsset_DefaultsCategoryNormal(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No asset here"}})
+	assertRedirectsTo(t, rec, "/issues/1")
+	if created == nil {
+		t.Fatal("xolu.Create for issues was never called")
+	}
+	if created["asset_category"] != "normal" {
+		t.Errorf("expected asset_category=normal when no asset is linked, got %v", created["asset_category"])
+	}
+}
