@@ -298,7 +298,7 @@ func (h *UIHandler) IssueTemplateFields(w http.ResponseWriter, r *http.Request) 
 
 // IssueTemplatesList handles GET /issue-templates.
 func (h *UIHandler) IssueTemplatesList(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 
 	var tpls []IssueTemplate
@@ -316,14 +316,14 @@ func (h *UIHandler) IssueTemplatesList(w http.ResponseWriter, r *http.Request) {
 
 // IssueTemplateNew handles GET /issue-templates/new.
 func (h *UIHandler) IssueTemplateNew(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	data := IssueTemplateFormData{CSRFToken: h.GetCSRFToken(w, r), FieldTypes: templateFieldTypes()}
 	h.page.Render(w, r, t("issues.templates.new"), "/issues", IssueTemplateFormPage(data, t))
 }
 
 // IssueTemplateCreate handles POST /issue-templates -- creates version 1.
 func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	csrfToken := h.GetCSRFToken(w, r)
 
@@ -380,7 +380,7 @@ func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) 
 
 // IssueTemplateDetail handles GET /issue-templates/{key}.
 func (h *UIHandler) IssueTemplateDetail(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	key := r.PathValue("key")
 
@@ -448,7 +448,7 @@ func (h *UIHandler) loadAssignments(ctx context.Context) ([]TemplateAssetType, m
 // IssueTemplateEdit handles GET /issue-templates/{key}/edit -- the editor
 // preloaded with the current version's fields.
 func (h *UIHandler) IssueTemplateEdit(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	key := r.PathValue("key")
 
@@ -473,7 +473,7 @@ func (h *UIHandler) IssueTemplateEdit(w http.ResponseWriter, r *http.Request) {
 // IssueTemplateUpdate handles POST /issue-templates/{key}/edit -- writes a
 // new version (current version bumped) rather than editing in place.
 func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	key := r.PathValue("key")
 	csrfToken := h.GetCSRFToken(w, r)
@@ -533,7 +533,7 @@ func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) 
 // one assignment per checked asset type, clearing this template from any
 // unchecked type it was previously assigned to.
 func (h *UIHandler) IssueTemplateAssign(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	key := r.PathValue("key")
 

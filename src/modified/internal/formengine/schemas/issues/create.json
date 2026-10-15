@@ -28,15 +28,13 @@
       "type": "string",
       "title": "Priority",
       "x-seam-input": "select",
-      "enum": ["critical", "high", "medium", "low"],
-      "default": "medium"
+      "enum": ["critical", "high", "medium", "low"]
     },
     "severity": {
       "type": "string",
       "title": "Severity",
       "x-seam-input": "select",
-      "enum": ["critical", "major", "minor"],
-      "default": "minor"
+      "enum": ["critical", "major", "minor"]
     }
   },
   "required": ["title"]

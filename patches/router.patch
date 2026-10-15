@@ -1,0 +1,33 @@
+--- a/internal/ui/router.go
++++ b/internal/ui/router.go
+@@ -526,7 +526,29 @@
+ 	mux.HandleFunc("GET /issues/new", r.requireAuth(r.handler.IssueNew))
+ 	mux.HandleFunc("POST /issues", r.requireAuth(r.handler.IssueCreate))
+ 	mux.HandleFunc("GET /issues/{id}", r.requireAuth(r.handler.IssueDetail))
+-	mux.HandleFunc("POST /issues/{id}/toggle-status", r.requireAuth(r.handler.IssueToggleStatus))
++	mux.HandleFunc("POST /issues/{id}/start", r.requireAuth(r.handler.IssueStart))
++	mux.HandleFunc("POST /issues/{id}/resolve", r.requireAuth(r.handler.IssueResolve))
++	mux.HandleFunc("POST /issues/{id}/close", r.requireAuth(r.handler.IssueClose))
++	mux.HandleFunc("GET /issues/{id}/reject", r.requireAuth(r.handler.IssueRejectFormPage))
++	mux.HandleFunc("POST /issues/{id}/reject", r.requireAuth(r.handler.IssueReject))
++
++	// Issue templates (2026-10-10) -- versioned field sets assignable to
++	// asset types. The HTMX partial that swaps fields into the create form
++	// is open to any authenticated user (it only reads the assignment);
++	// managing templates is gated to admin/manager via system.settings.edit.
++	// A separate /issue-templates namespace, not /issues/templates/*: the
++	// latter would overlap the issue lifecycle routes (e.g.
++	// /issues/{id}/reject and /issues/templates/{key} both match
++	// /issues/templates/reject) and Go 1.22 ServeMux panics on that.
++	mux.HandleFunc("GET /issue-templates/fields", r.requireAuth(r.handler.IssueTemplateFields))
++	mux.HandleFunc("GET /issue-templates", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplatesList))
++	mux.HandleFunc("GET /issue-templates/new", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateNew))
++	mux.HandleFunc("POST /issue-templates", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateCreate))
++	mux.HandleFunc("GET /issue-templates/{key}", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateDetail))
++	mux.HandleFunc("GET /issue-templates/{key}/edit", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateEdit))
++	mux.HandleFunc("POST /issue-templates/{key}/edit", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateUpdate))
++	mux.HandleFunc("POST /issue-templates/{key}/assign", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateAssign))
++	mux.HandleFunc("POST /issue-templates/{key}/delete", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueTemplateDelete))
+ }
+ 
+ // MountDocumentsRoutes registers the Documents module's routes -- just

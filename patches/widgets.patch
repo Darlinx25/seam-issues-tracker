@@ -1,0 +1,25 @@
+--- a/internal/formengine/widgets.go
++++ b/internal/formengine/widgets.go
+@@ -746,6 +746,10 @@
+           suppressClear = true;
+           search.value = selection.label;
+           suppressClear = false;
++          // Notify any listeners (e.g. the issue template loader) that the
++          // underlying selection changed. The input event this widget
++          // otherwise relies on is not fired by programmatic value writes.
++          hidden.dispatchEvent(new Event('change', { bubbles: true }));
+         }
+       }
+     }
+@@ -761,7 +765,10 @@
+   // and doesn't depend on that assumption holding forever).
+   search.addEventListener('input', function() {
+     if (suppressClear) return;
+-    hidden.value = '';
++    if (hidden.value !== '') {
++      hidden.value = '';
++      hidden.dispatchEvent(new Event('change', { bubbles: true }));
++    }
+   });
+ })();`, f.Name, f.XSeamSource, fieldID, searchID, searchID))),
+ 		)

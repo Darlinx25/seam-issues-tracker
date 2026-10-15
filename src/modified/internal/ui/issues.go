@@ -71,7 +71,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 
 // IssuesList handles GET /issues.
 func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 
 	// Allowed states (8-state lifecycle). Whitelist to avoid SQL injection via param.
@@ -158,15 +158,19 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	h.page.Render(w, r, t("issues.list_title"), "/issues", IssuesListPage(data, t))
 }
 
+func issueFormDefaults() map[string]interface{} {
+	return map[string]interface{}{"priority": "medium", "severity": "minor"}
+}
+
 // IssueNew handles GET /issues/new.
 func (h *UIHandler) IssueNew(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	csrfToken := h.GetCSRFToken(w, r)
 
 	formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 	rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
-	formContent := formEng.Render(ctx, issueschemas.Schema("create"), nil, nil, rc)
+	formContent := formEng.Render(ctx, resolveSchema(ctx, "issues", "create", issueschemas.Schema("create")), issueFormDefaults(), nil, rc)
 
 	data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent}
 	h.page.Render(w, r, t("issues.new"), "/issues", IssueFormPage(data, t))
@@ -174,7 +178,7 @@ func (h *UIHandler) IssueNew(w http.ResponseWriter, r *http.Request) {
 
 // IssueCreate handles POST /issues.
 func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 
 	if err := r.ParseForm(); err != nil {
@@ -222,8 +226,17 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if len(errors) > 0 || len(fieldErrors) > 0 {
 		formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 		rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
-		formContent := formEng.Render(ctx, issueschemas.Schema("create"),
-			map[string]interface{}{"title": title, "description": description, "asset_id": assetIDStr, "priority": priority, "severity": severity}, errors, rc)
+		values := issueFormDefaults()
+		values["title"] = title
+		values["description"] = description
+		values["asset_id"] = assetIDStr
+		if priority != "" {
+			values["priority"] = priority
+		}
+		if severity != "" {
+			values["severity"] = severity
+		}
+		formContent := formEng.Render(ctx, resolveSchema(ctx, "issues", "create", issueschemas.Schema("create")), values, errors, rc)
 		var tplContent mi.H
 		if tpl != nil && len(tpl.Fields) > 0 {
 			tplContent = h.renderTemplateFields(ctx, tpl, formData, fieldErrors, csrfToken)
@@ -279,7 +292,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 
 // IssueDetail handles GET /issues/{id}.
 func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -339,7 +352,7 @@ func (h *UIHandler) IssueClose(w http.ResponseWriter, r *http.Request) {
 
 // IssueTransition is the shared fetch-walk-denormalize sequence.
 func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, input string) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -377,7 +390,7 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 // IssueRejectFormPage handles GET /issues/{id}/reject -- renders the
 // reject form. A reason is mandatory; enforced server-side on submit.
 func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -398,7 +411,7 @@ func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) 
 // state and reject_reason onto the entity. An empty motivo re-renders
 // the form with an error and never touches the FSM.
 func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc()
+	t := h.translateFunc(r)
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id == 0 {
