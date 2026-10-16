@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	mi "github.com/ha1tch/minty"
+	"github.com/ha1tch/seam-ui/internal/auth"
 )
 
 // templateOQL decodes the OQL query and answers with the rows resolve(q)
@@ -151,6 +152,76 @@ func TestIssueCreate_WithoutAsset_OmitsAssetID(t *testing.T) {
 	assertRedirectsTo(t, rec, "/issues/2")
 	if _, ok := created["asset_id"]; ok {
 		t.Errorf("expected no asset_id key at all when the picker had no selection, got %v", created["asset_id"])
+	}
+}
+
+// TestIssueCreate_CapturesReportedBy confirms the authenticated session user
+// is stored as reported_by on the created issue -- the write half of the card.
+func TestIssueCreate_CapturesReportedBy(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"title": {"Leaking valve"}}
+	req := httptest.NewRequest("POST", "/issues", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "manager"}))
+	rec := httptest.NewRecorder()
+	h.IssueCreate(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if created == nil {
+		t.Fatal("xolu.Create for issues was never called")
+	}
+	if created["reported_by"] != 42.0 {
+		t.Errorf("expected reported_by=42 (session user), got %v", created["reported_by"])
+	}
+}
+
+// TestIssueCreate_WithoutUser_OmitsReportedBy confirms that with no session
+// user (and DevMode off) no reported_by key is written at all.
+func TestIssueCreate_WithoutUser_OmitsReportedBy(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No session"}})
+	assertRedirectsTo(t, rec, "/issues/1")
+	if _, ok := created["reported_by"]; ok {
+		t.Errorf("expected no reported_by key when there is no session user, got %v", created["reported_by"])
 	}
 }
 
@@ -309,6 +380,38 @@ func TestIssueDetail_ResolvesLinkedAssetName(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Excavadora CAT 320") {
 		t.Error("expected the linked asset's real name to appear on the detail page")
+	}
+}
+
+// TestIssueDetail_ShowsReporterName confirms the detail page resolves the
+// stored reported_by id to the user's name -- the read half of the card.
+func TestIssueDetail_ShowsReporterName(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Test Issue", "state": "reported",
+				"machine_id": float64(1), "reported_by": float64(42),
+			})
+		},
+		"GET /api/v1/users/42": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(42), "name": "Horacio Lopez"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Horacio Lopez") {
+		t.Error("expected the reporter's resolved name to appear on the detail page")
 	}
 }
 
