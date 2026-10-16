@@ -190,10 +190,10 @@ func TestIssueStart_ReportedToInProgress(t *testing.T) {
 }
 
 // TestIssueResolve_InProgressToResolved confirms /issues/{id}/resolve walks
-// the issue's FSM machine with input "resolve", then denormalizes the
-// new state onto the entity. resolve now lands on "resolved"; the separate
-// close transition (resolved -> closed) is covered by the close action.
+// the issue's FSM machine with the "resolve" input and denormalizes the new
+// state onto the entity. The walk input is captured and asserted.
 func TestIssueResolve_InProgressToResolved(t *testing.T) {
+	var walkInput string
 	var patchedState string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +201,11 @@ func TestIssueResolve_InProgressToResolved(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "in_progress", "machine_id": float64(1)})
 		},
 		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"previous": "in_progress", "current": "resolved", "terminal": false})
 		},
@@ -219,9 +224,59 @@ func TestIssueResolve_InProgressToResolved(t *testing.T) {
 	req.SetPathValue("id", "1")
 	rec := httptest.NewRecorder()
 	h.IssueResolve(rec, req)
+
 	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "resolve" {
+		t.Errorf("expected walk input 'resolve', got %q", walkInput)
+	}
 	if patchedState != "resolved" {
 		t.Errorf("expected state to be 'resolved', got %q", patchedState)
+	}
+}
+
+// TestIssueClose_ResolvedToClosed confirms /issues/{id}/close walks the
+// issue's FSM machine with the "close" input and denormalizes the resulting
+// terminal state onto the entity. The walk input is captured and asserted,
+// so a wrong transition name fails the test instead of passing silently.
+func TestIssueClose_ResolvedToClosed(t *testing.T) {
+	var walkInput string
+	var patchedState string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "resolved", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "resolved", "current": "closed", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			patchedState = toString(body["state"])
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/close", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueClose(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "close" {
+		t.Errorf("expected walk input 'close', got %q", walkInput)
+	}
+	if patchedState != "closed" {
+		t.Errorf("expected state to be 'closed', got %q", patchedState)
 	}
 }
 
@@ -733,41 +788,6 @@ func TestIssuesList_InvalidStateFilterIgnored(t *testing.T) {
 	}
 	if strings.Contains(listQuery, "WHERE") {
 		t.Errorf("expected no WHERE clause for a non-whitelisted state, got %q", listQuery)
-	}
-}
-
-// TestIssueClose_ResolvedToClosed confirms /issues/{id}/close walks the
-// machine with input "close" and denormalizes the terminal state.
-func TestIssueClose_ResolvedToClosed(t *testing.T) {
-	var patchedState string
-	server := mockOLU(t, map[string]http.HandlerFunc{
-		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "resolved", "machine_id": float64(1)})
-		},
-		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"previous": "resolved", "current": "closed", "terminal": true})
-		},
-		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			patchedState = toString(body["state"])
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
-		},
-	})
-	defer server.Close()
-	h := newHandler(t, server)
-
-	req := httptest.NewRequest("POST", "/issues/1/close", nil)
-	req.SetPathValue("id", "1")
-	rec := httptest.NewRecorder()
-	h.IssueClose(rec, req)
-
-	assertRedirectsTo(t, rec, "/issues/1")
-	if patchedState != "closed" {
-		t.Errorf("expected state to be 'closed', got %q", patchedState)
 	}
 }
 
