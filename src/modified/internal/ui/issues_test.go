@@ -1098,3 +1098,90 @@ func TestIssueCreate_WithoutAsset_DefaultsCategoryNormal(t *testing.T) {
 		t.Errorf("expected asset_category=normal when no asset is linked, got %v", created["asset_category"])
 	}
 }
+
+func TestIssueDetail_ShowsLinkedAssetInfo(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Test Issue", "asset_id": float64(9)})
+		},
+		"GET /api/v1/assets/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(9), "name": "Excavadora CAT 320",
+				"type_id": float64(3), "location_id": float64(5), "criticality": "Alta",
+			})
+		},
+		"GET /api/v1/asset_types/3": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(3), "name": "Maquinaria"})
+		},
+		"GET /api/v1/locations/5": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(5), "short_name": "Planta Norte"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Excavadora CAT 320", "Maquinaria", "Planta Norte", "issues.asset.category.critico"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in the detail page", want)
+		}
+	}
+}
+
+func TestIssueDetail_NoAsset_OmitsAssetInfo(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "No asset"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "issues.asset.category") {
+		t.Error("expected no asset info section when the issue has no linked asset")
+	}
+}
+
+func TestIssueDetail_MissingAsset_ShowsUnavailableNote(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Dangling asset", "asset_id": float64(999)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (page must not break), got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "issues.asset.unavailable") {
+		t.Error("expected the asset-unavailable note when the linked asset cannot be read")
+	}
+}

@@ -18,10 +18,16 @@
    "issues.detail_title": "Ocorrência",
    "issues.empty": "Ainda não há ocorrências",
    "issues.error.title_required": "O título é obrigatório",
-@@ -382,8 +388,46 @@
+@@ -382,8 +388,52 @@
    "issues.list_title": "Ocorrências",
    "issues.new": "Nova Ocorrência",
    "issues.no_asset": "Nenhum ativo vinculado",
++  "issues.asset.category": "Categoria",
++  "issues.asset.type": "Tipo de ativo",
++  "issues.asset.location": "Localização",
++  "issues.asset.category.critico": "Crítico",
++  "issues.asset.category.normal": "Normal",
++  "issues.asset.unavailable": "Informação do ativo indisponível",   
 -  "issues.status.closed": "Fechada",
 -  "issues.status.open": "Aberta",
 +  "issues.priority.label": "Prioridade",

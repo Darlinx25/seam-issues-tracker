@@ -84,12 +84,17 @@ func assetCategoryFromCriticality(criticality string) string {
 	}
 }
 
+// assetCategoryFromStoredCriticality normalises the stored criticality token
+// (Spanish in the assets entity: "Alta"/"Media"/"Baja") to the canonical
+// English token and maps it to the issue category.
+func assetCategoryFromStoredCriticality(raw string) string {
+	canonical := toString(translateAssetEnumValue("criticality", raw, false))
+	return assetCategoryFromCriticality(canonical)
+}
+
 // resolveAssetCategory reads the linked asset's stored criticality and
-// resolves its category (see assetCategoryFromCriticality). The assets
-// entity persists criticality in Spanish ("Alta"/"Media"/"Baja"), so the
-// stored value is normalised to the canonical English token first through
-// the existing asset enum bridge. Returns "normal" when there is no asset,
-// when the asset cannot be read, or when criticality is unrecognised.
+// resolves its category. Returns "normal" when there is no asset or when
+// the asset cannot be read.
 func (h *UIHandler) resolveAssetCategory(ctx context.Context, assetID int64) string {
 	if assetID <= 0 {
 		return "normal"
@@ -98,9 +103,7 @@ func (h *UIHandler) resolveAssetCategory(ctx context.Context, assetID int64) str
 	if err != nil {
 		return "normal"
 	}
-	raw := toString(asset.Data["criticality"])
-	canonical := toString(translateAssetEnumValue("criticality", raw, false))
-	return assetCategoryFromCriticality(canonical)
+	return assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))
 }
 
 // IssuesList handles GET /issues.
@@ -342,9 +345,23 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issue := issueFromEntity(entity)
+	var assetDetail IssueDetailData
 	if issue.AssetID > 0 {
 		if asset, err := h.xoluClient.Get(ctx, "assets", issue.AssetID); err == nil {
 			issue.AssetName = toString(asset.Data["name"])
+			assetDetail.AssetCategory = assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))
+			if typeID := toInt64(asset.Data["type_id"]); typeID > 0 {
+				if at, err := h.xoluClient.Get(ctx, "asset_types", typeID); err == nil {
+					assetDetail.AssetTypeName = toString(at.Data["name"])
+				}
+			}
+			if locID := toInt64(asset.Data["location_id"]); locID > 0 {
+				if loc, err := h.xoluClient.Get(ctx, "locations", locID); err == nil {
+					assetDetail.AssetLocationName = toString(loc.Data["short_name"])
+				}
+			}
+		} else {
+			assetDetail.AssetMissing = true
 		}
 	}
 	if issue.ReportedBy > 0 {
@@ -353,7 +370,9 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r)}
+	data := assetDetail
+	data.Issue = issue
+	data.CSRFToken = h.GetCSRFToken(w, r)
 	if issue.TemplateID > 0 {
 		if tplEntity, err := h.xoluClient.Get(ctx, issueTemplatesEntity, issue.TemplateID); err == nil {
 			tpl := issueTemplateFromRow(tplEntity.Data)
@@ -724,16 +743,20 @@ type IssueFormField struct {
 	Value string
 }
 
-// IssueDetailData holds data for the issue detail page.
 type IssueDetailData struct {
 	Issue        Issue
 	CSRFToken    string
 	WalkError    string
 	TemplateName string
 	FormFields   []IssueFormField
+
+	// Resolved from the linked asset on read (display only).
+	AssetCategory     string // "critico" | "normal"
+	AssetTypeName     string
+	AssetLocationName string
+	AssetMissing      bool // asset_id set but the asset could not be read
 }
 
-// IssueDetailPage renders the issue detail page.
 func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) string) mi.H {
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
@@ -753,11 +776,30 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				children = append(children,
 					b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), iss.Description),
 				)
-				if iss.AssetName != "" {
-					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.linked_to")+": "),
-						b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
-					))
+				if iss.AssetID > 0 {
+					if data.AssetMissing {
+						children = append(children, b.Div(mi.Class("mt-4 text-sm text-amber-600 dark:text-amber-400"),
+							t("issues.asset.unavailable")))
+					} else {
+						children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.linked_to")+": "),
+							b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
+						))
+						children = append(children,
+							b.Div(mi.Class("mt-1 text-sm"),
+								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.category")+": "),
+								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), t("issues.asset.category."+data.AssetCategory)),
+							),
+							b.Div(mi.Class("mt-1 text-sm"),
+								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.type")+": "),
+								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetTypeName),
+							),
+							b.Div(mi.Class("mt-1 text-sm"),
+								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.location")+": "),
+								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetLocationName),
+							),
+						)
+					}
 				}
 				if iss.ReportedByName != "" {
 					children = append(children, b.Div(mi.Class("mt-4 text-sm"),

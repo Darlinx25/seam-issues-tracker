@@ -18,10 +18,16 @@
    "issues.detail_title": "問題",
    "issues.empty": "問題はまだありません",
    "issues.error.title_required": "タイトルは必須です",
-@@ -382,8 +388,46 @@
+@@ -382,8 +388,52 @@
    "issues.list_title": "問題管理",
    "issues.new": "新規問題",
    "issues.no_asset": "関連資産なし",
++  "issues.asset.category": "カテゴリ",
++  "issues.asset.type": "資産タイプ",
++  "issues.asset.location": "場所",
++  "issues.asset.category.critico": "重大",
++  "issues.asset.category.normal": "通常",
++  "issues.asset.unavailable": "資産情報を利用できません",
 -  "issues.status.closed": "解決済み",
 -  "issues.status.open": "未解決",
 +  "issues.priority.label": "優先度",

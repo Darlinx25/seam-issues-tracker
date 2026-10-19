@@ -28,10 +28,16 @@
    "issues.detail_title": "Issue",
    "issues.empty": "No issues yet",
    "issues.error.title_required": "Title is required",
-@@ -382,8 +398,36 @@
+@@ -382,8 +398,42 @@
    "issues.list_title": "Issues",
    "issues.new": "New Issue",
    "issues.no_asset": "No asset linked",
++  "issues.asset.category": "Category",
++  "issues.asset.type": "Asset type",
++  "issues.asset.location": "Location",
++  "issues.asset.category.critico": "Critical",
++  "issues.asset.category.normal": "Normal",
++  "issues.asset.unavailable": "Asset information unavailable",
 -  "issues.status.closed": "Closed",
 -  "issues.status.open": "Open",
 +  "issues.reported_by": "Reported by",
