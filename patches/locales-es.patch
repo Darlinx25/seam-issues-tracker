@@ -18,7 +18,7 @@
    "issues.detail_title": "Incidencia",
    "issues.empty": "Aún no hay incidencias",
    "issues.error.title_required": "El título es obligatorio",
-@@ -382,8 +388,52 @@
+@@ -382,8 +388,55 @@
    "issues.list_title": "Incidencias",
    "issues.new": "Nueva Incidencia",
    "issues.no_asset": "Sin activo vinculado",
@@ -70,6 +70,9 @@
 +  "issues.templates.not_found": "Plantilla no encontrada",
 +  "issues.templates.error.name_required": "El nombre es obligatorio",
 +  "issues.templates.error.duplicate_key": "Ya existe una plantilla con ese nombre",
++  "issues.search_placeholder": "Buscar incidencias...",
++  "issues.search_empty": "Ninguna incidencia coincide con la búsqueda.",
++  "issues.search_clear": "Limpiar búsqueda",
    "loading": "Cargando...",
    "login.email_placeholder": "tu@ejemplo.com",
    "login.error.account_disabled": "La cuenta está deshabilitada",

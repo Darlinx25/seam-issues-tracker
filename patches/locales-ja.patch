@@ -18,7 +18,7 @@
    "issues.detail_title": "問題",
    "issues.empty": "問題はまだありません",
    "issues.error.title_required": "タイトルは必須です",
-@@ -382,8 +388,52 @@
+@@ -382,8 +388,55 @@
    "issues.list_title": "問題管理",
    "issues.new": "新規問題",
    "issues.no_asset": "関連資産なし",
@@ -70,6 +70,9 @@
 +  "issues.templates.not_found": "テンプレートが見つかりません",
 +  "issues.templates.error.name_required": "名前は必須です",
 +  "issues.templates.error.duplicate_key": "その名前のテンプレートは既に存在します",
++  "issues.search_placeholder": "問題を検索...",
++  "issues.search_empty": "現在の検索に一致する問題はありません。",
++  "issues.search_clear": "検索をクリア",
    "loading": "読み込み中...",
    "login.email_placeholder": "you@example.com",
    "login.error.account_disabled": "アカウントは無効になっています",

@@ -1,0 +1,26 @@
+--- a/internal/ui/components.go
++++ b/internal/ui/components.go
+@@ -468,6 +468,10 @@
+ 	Title    string
+ 	Subtitle string
+ 	Badge    mi.H
++	// Search is optional extra text exposed as data-search, so a caller can
++	// filter the rendered rows client-side (e.g. by title plus a linked
++	// asset's name) without duplicating this card's markup.
++	Search string
+ }
+ 
+ // SimpleListCard renders a bordered card containing a list of
+@@ -498,7 +502,11 @@
+ 			if item.Badge != nil {
+ 				rowChildren = append(rowChildren, item.Badge(b))
+ 			}
+-			rows[i] = b.A(append([]interface{}{mi.Href(item.Href)}, rowChildren...)...)
++			rowAttrs := []interface{}{mi.Href(item.Href)}
++			if item.Search != "" {
++				rowAttrs = append(rowAttrs, mi.Attr("data-search", item.Search))
++			}
++			rows[i] = b.A(append(rowAttrs, rowChildren...)...)
+ 		}
+ 		return b.Div(append([]interface{}{mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700")}, rows...)...)
+ 	}

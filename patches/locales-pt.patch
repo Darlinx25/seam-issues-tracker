@@ -18,7 +18,7 @@
    "issues.detail_title": "Ocorrência",
    "issues.empty": "Ainda não há ocorrências",
    "issues.error.title_required": "O título é obrigatório",
-@@ -382,8 +388,52 @@
+@@ -382,8 +388,55 @@
    "issues.list_title": "Ocorrências",
    "issues.new": "Nova Ocorrência",
    "issues.no_asset": "Nenhum ativo vinculado",
@@ -70,6 +70,9 @@
 +  "issues.templates.not_found": "Modelo não encontrado",
 +  "issues.templates.error.name_required": "O nome é obrigatório",
 +  "issues.templates.error.duplicate_key": "Já existe um modelo com esse nome",
++  "issues.search_placeholder": "Buscar ocorrências...",
++  "issues.search_empty": "Nenhuma ocorrência corresponde à busca atual.",
++  "issues.search_clear": "Limpar busca",
    "loading": "Carregando...",
    "login.email_placeholder": "voce@exemplo.com",
    "login.error.account_disabled": "A conta está desativada",

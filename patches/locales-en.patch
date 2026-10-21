@@ -28,7 +28,7 @@
    "issues.detail_title": "Issue",
    "issues.empty": "No issues yet",
    "issues.error.title_required": "Title is required",
-@@ -382,8 +398,42 @@
+@@ -382,8 +398,45 @@
    "issues.list_title": "Issues",
    "issues.new": "New Issue",
    "issues.no_asset": "No asset linked",
@@ -70,6 +70,9 @@
 +  "issues.templates.not_found": "Template not found",
 +  "issues.templates.error.name_required": "Name is required",
 +  "issues.templates.error.duplicate_key": "A template with that name already exists",
++  "issues.search_placeholder": "Search issues...",
++  "issues.search_empty": "No issues match the current search.",
++  "issues.search_clear": "Clear search",
    "loading": "Loading...",
    "login.email_placeholder": "you@example.com",
    "login.error.account_disabled": "Account is disabled",

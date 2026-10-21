@@ -1009,6 +1009,185 @@ func TestIssuesList_RendersAllStateTabsWithCounts(t *testing.T) {
 	}
 }
 
+// TestIssuesList_NoSearch_NoTitleFilter confirms the text search never
+// reaches the list query -- filtering is client-side over the fetched rows --
+// while the search box, its placeholder and the clear button are rendered.
+func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				listQuery = q
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(listQuery, "WHERE") || strings.Contains(listQuery, "LIKE") {
+		t.Errorf("expected the search to stay out of the query, got %q", listQuery)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`name="q"`, "issues.search_placeholder", "issue-search-clear", "issue-no-results"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in the rendered list page", want)
+		}
+	}
+}
+
+// TestIssuesList_SearchPrefillsInput confirms ?q= prefills the box (so a
+// shared URL or tab switch keeps the term) and still issues the same
+// unfiltered list query, plus exposes the title as data-search for the JS.
+func TestIssuesList_SearchPrefillsInput(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				listQuery = q
+				return []map[string]any{
+					{"id": float64(7), "title": "Belt slipping", "state": "reported"},
+				}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?q=belt", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(listQuery, "LIKE") || strings.Contains(listQuery, "WHERE") {
+		t.Errorf("expected no server-side text filter, got %q", listQuery)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `value="belt"`) {
+		t.Error("expected the search input to keep the submitted value")
+	}
+	if !strings.Contains(body, `data-search="Belt slipping"`) {
+		t.Error("expected the issue title to be exposed as data-search")
+	}
+}
+
+// TestIssuesList_SearchDataIncludesAssetName confirms the data-search text
+// the JS matches against includes the linked asset name ("Toyota - VH01"),
+// so searching for "vh01" finds an issue whose title doesn't contain it.
+func TestIssuesList_SearchDataIncludesAssetName(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				return []map[string]any{
+					{"id": float64(1), "title": "Motor overheat", "state": "reported", "asset_id": float64(9)},
+				}
+			})
+		},
+		"GET /api/v1/assets": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Toyota - VH01"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `data-search="Motor overheat Toyota - VH01"`) {
+		t.Error("expected data-search to combine the title and the asset name")
+	}
+}
+
+// TestIssuesList_SearchCombinesWithState confirms the state filter stays in
+// the query while the search term survives it: the tabs carry ?q= and the
+// box is prefilled, so switching tabs keeps filtering the same term.
+func TestIssuesList_SearchCombinesWithState(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				listQuery = q
+				return []map[string]any{
+					{"id": float64(3), "title": "Motor hot", "state": "in_progress"},
+				}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?state=in_progress&q=motor", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(listQuery, "WHERE state = 'in_progress'") {
+		t.Errorf("expected the state filter to remain in the query, got %q", listQuery)
+	}
+	if strings.Contains(listQuery, "LIKE") {
+		t.Errorf("expected no text filter in the query, got %q", listQuery)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "q=motor") {
+		t.Error("expected the state tabs to keep the active search")
+	}
+	if !strings.Contains(body, `value="motor"`) {
+		t.Error("expected the search input to be prefilled")
+	}
+}
+
+// TestIssuesList_SearchEmptyMessageRendered confirms the page ships the
+// search-specific no-results block (toggled by the JS when every row is
+// filtered out) translated through t().
+func TestIssuesList_SearchEmptyMessageRendered(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?q=zzz", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="issue-no-results"`) {
+		t.Error("expected the client-side no-results block to render")
+	}
+	if !strings.Contains(body, "issues.search_empty") {
+		t.Error("expected the no-results text to come from t()")
+	}
+}
+
 func TestAssetCategoryFromCriticality(t *testing.T) {
 	cases := []struct {
 		criticality string

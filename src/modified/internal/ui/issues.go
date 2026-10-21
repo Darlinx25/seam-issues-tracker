@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,11 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		stateFilter = ""
 	}
 
+	// Text search (?q=) is applied client-side, over the rows already fetched
+	// from xolu (title plus linked asset name). It needs no extra query: it's
+	// only read here to prefill the box and keep the state-tab links in sync.
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+
 	// 1) Counts per state (all issues, not paged) to populate tabs
 	counts := map[string]int{
 		"reported":    0,
@@ -154,15 +160,15 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to count issues by state", "error", err)
 	}
 
-	// 2) List issues (filtered if stateFilter set). Keep TOP 100 and id DESC (existing behavior).
-	var listQuery string
-	if stateFilter == "" {
-		listQuery = "SELECT TOP 100 * FROM issues ORDER BY id DESC"
-	} else {
+	// 2) List issues (filtered by state, as before). Keep TOP 100 and id DESC.
+	// The text search deliberately stays out of this query -- the page's own
+	// JS filters the rendered rows in real time.
+	listQuery := "SELECT TOP 100 * FROM issues"
+	if stateFilter != "" {
 		// Quote state (validated against whitelist). escapeOQL exists but enum is safe; quote-doubling is harmless.
-		escaped := escapeOQL(stateFilter)
-		listQuery = "SELECT TOP 100 * FROM issues WHERE state = '" + escaped + "' ORDER BY id DESC"
+		listQuery += " WHERE state = '" + escapeOQL(stateFilter) + "'"
 	}
+	listQuery += " ORDER BY id DESC"
 
 	result, err := h.xoluClient.OQL(ctx, listQuery)
 	var issues []Issue
@@ -191,7 +197,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts}
+	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts, SearchQuery: search}
 	h.page.Render(w, r, t("issues.list_title"), "/issues", IssuesListPage(data, t))
 }
 
@@ -520,6 +526,25 @@ type IssuesListData struct {
 	Issues      []Issue
 	StateFilter string
 	Counts      map[string]int
+	SearchQuery string
+}
+
+// issueTabHref builds a state-tab link that keeps the current title search
+// (?q=) in place, so switching tabs doesn't silently drop the search. With no
+// search active it returns the plain URL the tabs have always used.
+func issueTabHref(state, search string) string {
+	if search == "" {
+		if state == "" {
+			return "/issues"
+		}
+		return "/issues?state=" + state
+	}
+	v := url.Values{}
+	if state != "" {
+		v.Set("state", state)
+	}
+	v.Set("q", search)
+	return "/issues?" + v.Encode()
 }
 
 // IssuesListPage renders the issues list page.
@@ -538,6 +563,7 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			Title:    iss.Title,
 			Subtitle: assetLine,
 			Badge:    issueStatusBadge(iss.State, t),
+			Search:   strings.TrimSpace(iss.Title + " " + iss.AssetName),
 		}
 	}
 
@@ -570,7 +596,7 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		} else {
 			allClasses += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
 		}
-		tabs = append(tabs, b.A(mi.Href("/issues"), mi.Class(allClasses), t("issues.all"), " (", strconv.Itoa(allCount), ")"))
+		tabs = append(tabs, b.A(mi.Href(issueTabHref("", data.SearchQuery)), mi.Class(allClasses), t("issues.all"), " (", strconv.Itoa(allCount), ")"))
 
 		for _, st := range statesOrder {
 			c := 0
@@ -585,9 +611,17 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
 			}
 			label := t("issues.state." + st)
-			tabs = append(tabs, b.A(mi.Href("/issues?state="+st), mi.Class(cls), label, " (", strconv.Itoa(c), ")"))
+			tabs = append(tabs, b.A(mi.Href(issueTabHref(st, data.SearchQuery)), mi.Class(cls), label, " (", strconv.Itoa(c), ")"))
 		}
 
+		// The search box and the state tabs share this bar. Submitting the
+		// box keeps the active tab via a hidden input; clicking a tab keeps
+		// the search via issueTabHref -- so the two combine in either order.
+		// The search box and the state tabs share this bar. Filtering happens
+		// entirely in issueSearchScript below, over the rows already rendered
+		// from the fetched list, so it's instant and needs no extra query. The
+		// input only prefills from ?q= so a shared URL or a tab switch keeps
+		// the search.
 		return b.Div(mi.Class("space-y-6"),
 			b.Div(mi.Class("flex items-center justify-between"),
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.list_title")),
@@ -596,11 +630,98 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 				),
 			),
 			// Filter bar
-			b.Div(append([]interface{}{mi.Class("flex flex-wrap gap-2")}, tabs...)...),
-			SimpleListCard(items, t("issues.empty"))(b),
+			b.Div(mi.Class("flex flex-wrap items-center gap-4"),
+				b.Div(mi.Class("relative flex-1 max-w-md"),
+					SearchInput("q", t("issues.search_placeholder"), data.SearchQuery,
+						mi.ID("issue-search"),
+						mi.Attr("style", "padding-right:2.5rem"),
+					)(b),
+					b.Button(mi.Type("button"), mi.ID("issue-search-clear"),
+						mi.Class("hidden absolute right-4 top-1/2 -translate-y-1/2 material-icons text-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"),
+						mi.Attr("aria-label", t("issues.search_clear")),
+						"close",
+					),
+				),
+				b.Div(append([]interface{}{mi.ID("issue-tabs"), mi.Class("flex flex-wrap gap-2")}, tabs...)...),
+			),
+			b.Div(mi.ID("issue-list"),
+				SimpleListCard(items, t("issues.empty"))(b),
+			),
+			b.Div(mi.ID("issue-no-results"),
+				mi.Class("hidden bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-500 dark:text-gray-400"),
+				t("issues.search_empty"),
+			),
+			b.Style(mi.Raw(issueSearchStyle)),
+			b.Script(mi.Raw(issueSearchScript)),
 		)
 	}
 }
+
+// issueSearchStyle hides the browser's own clear affordance on the search
+// input so it doesn't overlap the explicit clear button next to it.
+const issueSearchStyle = `
+#issue-search::-webkit-search-cancel-button,
+#issue-search::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+#issue-search::-ms-clear { display: none; }
+`
+
+// issueSearchScript filters the already-rendered issue rows by their
+// data-search text (title plus linked asset name) as the user types: no
+// round trip and no query involved. It also keeps the clear button, the
+// state-tab links and the URL's ?q= in sync with the current input.
+const issueSearchScript = `
+(function () {
+  var input = document.getElementById('issue-search');
+  var clear = document.getElementById('issue-search-clear');
+  var list = document.getElementById('issue-list');
+  var noResults = document.getElementById('issue-no-results');
+  var tabs = document.getElementById('issue-tabs');
+  if (!input || !list) return;
+  var rows = Array.prototype.slice.call(list.querySelectorAll('a[data-search]'));
+  var links = tabs ? Array.prototype.slice.call(tabs.querySelectorAll('a')) : [];
+
+  function sync() {
+    var q = (input.value || '').trim();
+    var needle = q.toLowerCase();
+    if (clear) clear.classList.toggle('hidden', q === '');
+
+    var shown = 0;
+    rows.forEach(function (row) {
+      var hay = (row.getAttribute('data-search') || '').toLowerCase();
+      var match = needle === '' || hay.indexOf(needle) !== -1;
+      row.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    if (noResults) noResults.classList.toggle('hidden', !(needle !== '' && rows.length > 0 && shown === 0));
+
+    links.forEach(function (a) {
+      var href = a.getAttribute('href') || '';
+      var parts = href.split('?');
+      var params = new URLSearchParams(parts.length > 1 ? parts[1] : '');
+      if (q !== '') { params.set('q', q); } else { params.delete('q'); }
+      var query = params.toString();
+      a.setAttribute('href', parts[0] + (query ? '?' + query : ''));
+    });
+
+    try {
+      var url = new URL(window.location.href);
+      if (q !== '') { url.searchParams.set('q', q); } else { url.searchParams.delete('q'); }
+      window.history.replaceState(null, '', url.pathname + url.search);
+    } catch (e) {}
+  }
+
+  input.addEventListener('input', sync);
+  input.addEventListener('search', sync);
+  if (clear) {
+    clear.addEventListener('click', function () {
+      input.value = '';
+      sync();
+      input.focus();
+    });
+  }
+  sync();
+})();
+`
 
 // issueStatusBadge maps this module's own status vocabulary to the
 // shared Badge(text, variant) primitive (internal/ui/components.go) --
