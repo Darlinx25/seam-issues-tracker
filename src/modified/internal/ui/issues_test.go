@@ -1364,3 +1364,108 @@ func TestIssueDetail_MissingAsset_ShowsUnavailableNote(t *testing.T) {
 		t.Error("expected the asset-unavailable note when the linked asset cannot be read")
 	}
 }
+
+// TestIssueDetail_ShowsHistory confirms the detail page renders the machine
+// history chronologically with action, resolved author, timestamp and the
+// rejection reason.
+func TestIssueDetail_ShowsHistory(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Pump leaking", "state": "rejected",
+				"machine_id": float64(7), "reported_by": float64(42),
+				"created_at": "2026-10-20T10:00:00Z",
+			})
+		},
+		"GET /api/v1/users/42": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(42), "name": "Horacio Lopez"})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ana Diaz"})
+		},
+		"GET /api/v2/fsm/machine/7/history": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"machine": float64(7),
+				"entries": []map[string]any{
+					{"id": float64(1), "to": "reported", "note": "machine created", "at": "2026-10-20T10:00:00Z"},
+					{"id": float64(2), "from": "reported", "to": "in_progress", "input": "start",
+						"payload": map[string]any{"actor": float64(9)}, "at": "2026-10-20T11:00:00Z"},
+					{"id": float64(3), "from": "in_progress", "to": "rejected", "input": "reject",
+						"payload": map[string]any{"actor": float64(9), "motivo": "duplicado de #12"}, "at": "2026-10-20T12:00:00Z"},
+				},
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"issues.history.title",
+		"issues.history.created",
+		"issues.history.action.start",
+		"issues.history.action.reject",
+		"Horacio Lopez",
+		"Ana Diaz",
+		"2026-10-20T12:00:00Z",
+		"duplicado de #12",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected detail body to contain %q", want)
+		}
+	}
+}
+
+// TestIssueStart_WalkCarriesActor confirms the walk payload records the
+// session user as the action's author.
+func TestIssueStart_WalkCarriesActor(t *testing.T) {
+	var walkBody struct {
+		Input   string                 `json:"input"`
+		Payload map[string]interface{} `json:"payload"`
+	}
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&walkBody)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "reported", "current": "in_progress", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/start", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "manager"}))
+	rec := httptest.NewRecorder()
+	h.IssueStart(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkBody.Input != "start" {
+		t.Errorf("expected walk input 'start', got %q", walkBody.Input)
+	}
+	if walkBody.Payload["actor"] != float64(42) {
+		t.Errorf("expected payload.actor=42, got %v", walkBody.Payload["actor"])
+	}
+}
+

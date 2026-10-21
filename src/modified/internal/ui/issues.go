@@ -70,6 +70,54 @@ func issueFromEntity(e *xolu.Entity) Issue {
 	}
 }
 
+// buildIssueHistory maps xolu's machine history into display entries,
+// resolving each distinct actor id to a user name once. The machine's
+// initial entry has no input; it is reported as "created" and attributed
+// to the issue's reporter.
+func (h *UIHandler) buildIssueHistory(ctx context.Context, entries []xolu.HistoryEntry, reporterName string) []IssueHistoryEntry {
+	names := map[int64]string{}
+	resolve := func(id int64) string {
+		if id <= 0 {
+			return ""
+		}
+		if name, ok := names[id]; ok {
+			return name
+		}
+		name := ""
+		if u, err := h.xoluClient.Get(ctx, "users", id); err == nil {
+			name = toString(u.Data["name"])
+		}
+		names[id] = name
+		return name
+	}
+
+	out := make([]IssueHistoryEntry, 0, len(entries))
+	for _, e := range entries {
+		item := IssueHistoryEntry{At: e.At, Action: "created", To: e.To}
+		if e.From != nil {
+			item.From = *e.From
+		}
+		if e.Input != nil {
+			item.Action = *e.Input
+		}
+		if len(e.Payload) > 0 {
+			var p map[string]any
+			if json.Unmarshal(e.Payload, &p) == nil {
+				item.ActorID = toInt64(p["actor"])
+				item.Reason = toString(p["motivo"])
+				item.Canonical = toInt64(p["canonical_id"])
+			}
+		}
+		if item.Action == "created" {
+			item.ActorName = reporterName
+		} else {
+			item.ActorName = resolve(item.ActorID)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // assetCategoryFromCriticality maps an asset's criticality to the issue's
 // stored asset_category, per the canonical table (ROADMAP section 4):
 // High -> "critico"; Medium/Low -> "normal". Any unrecognised value
@@ -392,6 +440,15 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	if issue.MachineID > 0 {
+		if hist, err := h.xoluClient.GetMachineHistory(ctx, issue.MachineID); err == nil {
+			data.History = h.buildIssueHistory(ctx, hist, issue.ReportedByName)
+		} else {
+			h.logger.Error("failed to load issue history", "id", id, "error", err)
+		}
+	}
+
 	h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 }
 
@@ -427,7 +484,11 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 	issue := issueFromEntity(entity)
 
-	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{Input: input})
+	var payload map[string]interface{}
+	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
+		payload = map[string]interface{}{"actor": u.ID}
+	}
+	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{Input: input, Payload: payload})
 	if err != nil {
 		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
 		csrfToken := h.GetCSRFToken(w, r)
@@ -498,9 +559,13 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	payload := map[string]interface{}{"motivo": motivo}
+	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
+		payload["actor"] = u.ID
+	}
 	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{
 		Input:   "reject",
-		Payload: map[string]interface{}{"motivo": motivo},
+		Payload: payload,
 	})
 	if err != nil {
 		h.logger.Info("issue reject walk failed", "id", id, "error", err)
@@ -864,6 +929,20 @@ type IssueFormField struct {
 	Value string
 }
 
+// IssueHistoryEntry is one step of an issue's lifecycle as shown in the
+// detail page's History section. Action is the FSM input that drove the
+// step ("created" for the machine's initial entry).
+type IssueHistoryEntry struct {
+	At        string
+	Action    string
+	ActorID   int64
+	ActorName string
+	From      string
+	To        string
+	Reason    string
+	Canonical int64
+}
+
 type IssueDetailData struct {
 	Issue        Issue
 	CSRFToken    string
@@ -876,6 +955,7 @@ type IssueDetailData struct {
 	AssetTypeName     string
 	AssetLocationName string
 	AssetMissing      bool // asset_id set but the asset could not be read
+	History           []IssueHistoryEntry
 }
 
 func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) string) mi.H {
@@ -984,6 +1064,51 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					))
 				}
 				return b.Div(children...)
+			})(b),
+			Card(t("issues.history.title"), func(b *mi.Builder) mi.Node {
+				if len(data.History) == 0 {
+					return b.P(mi.Class("text-sm text-gray-400 italic"), t("issues.history.empty"))
+				}
+				var rows []interface{}
+				for _, e := range data.History {
+					label := t("issues.history.action." + e.Action)
+					if e.Action == "created" {
+						label = t("issues.history.created")
+					}
+					meta := e.At
+					if e.ActorName != "" {
+						meta = e.ActorName + " · " + e.At
+					} else if e.ActorID > 0 {
+						meta = "#" + strconv.FormatInt(e.ActorID, 10) + " · " + e.At
+					}
+
+					parts := []interface{}{
+						b.Div(mi.Class("flex items-center justify-between gap-3"),
+							b.Span(mi.Class("text-sm font-medium text-gray-900 dark:text-white"), label),
+							b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"), meta),
+						),
+					}
+					if e.From != "" && e.To != "" {
+						parts = append(parts, b.Div(mi.Class("text-xs text-gray-500 dark:text-gray-400"),
+							t("issues.state."+e.From)+" → "+t("issues.state."+e.To)))
+					}
+					if e.Reason != "" {
+						parts = append(parts, b.Div(mi.Class("mt-1 text-xs text-amber-700 dark:text-amber-400"),
+							t("issues.history.reason")+": "+e.Reason))
+					}
+					if e.Canonical > 0 {
+						parts = append(parts, b.Div(mi.Class("mt-1 text-xs"),
+							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.history.duplicate_of")+": "),
+							b.A(mi.Href(fmt.Sprintf("/issues/%d", e.Canonical)),
+								mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"),
+								"#"+strconv.FormatInt(e.Canonical, 10)),
+						))
+					}
+					rows = append(rows, b.Div(append([]interface{}{
+						mi.Class("px-4 py-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 space-y-1"),
+					}, parts...)...))
+				}
+				return b.Div(rows...)
 			})(b),
 		)
 	}
