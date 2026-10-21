@@ -1,6 +1,6 @@
 --- a/internal/ui/components.go
 +++ b/internal/ui/components.go
-@@ -468,6 +468,10 @@
+@@ -468,6 +468,13 @@
  	Title    string
  	Subtitle string
  	Badge    mi.H
@@ -8,10 +8,23 @@
 +	// filter the rendered rows client-side (e.g. by title plus a linked
 +	// asset's name) without duplicating this card's markup.
 +	Search string
++	// Meta is optional extra text rendered as a third line under the
++	// subtitle (e.g. the responsible of an issue).
++	Meta string
  }
  
  // SimpleListCard renders a bordered card containing a list of
-@@ -498,7 +502,11 @@
+@@ -491,6 +498,9 @@
+ 			if item.Subtitle != "" {
+ 				left = append(left, b.Div(mi.Class("text-xs text-gray-500 dark:text-gray-400"), item.Subtitle))
+ 			}
++			if item.Meta != "" {
++				left = append(left, b.Div(mi.Class("text-xs text-gray-500 dark:text-gray-400"), item.Meta))
++			}
+ 			rowChildren := []interface{}{
+ 				mi.Class("flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-gray-700/50"),
+ 				b.Div(left...),
+@@ -498,7 +508,11 @@
  			if item.Badge != nil {
  				rowChildren = append(rowChildren, item.Badge(b))
  			}

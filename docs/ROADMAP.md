@@ -155,19 +155,44 @@ los 4 idiomas. Depende de la tarjeta de FSM.
 Acción Rechazar para cualquier estado no terminal. Formulario con
 textarea de motivo validado obligatorio en cliente y servidor. La
 transición `reject` se dispara con el motivo como input y queda visible
-en el detalle. i18n del formulario y del estado `rejected` en los 4
-idiomas. Tests de la transición y de motivo vacío. Depende de la
-tarjeta de FSM.
+en el detalle. Rechazar es una acción del ciclo de vida de la
+incidencia, así que la puede ejecutar el responsable de la incidencia o
+un administrador, no cualquier usuario. i18n del formulario y del estado
+`rejected` en los 4 idiomas. Tests de la transición, de motivo vacío y
+del rechazo por rol. Depende de la tarjeta de FSM.
 
 ### Asignar responsable a una incidencia
 
 Acción de asignar responsable en el detalle con un selector searchable
 sobre la entidad `users`, guardado en `assignee`. Al asignar sobre una
 incidencia `reported`, disparar `triage` para pasar a `triaged`; desde
-`triaged` se habilita pasar a `in_progress`. El creador queda como
-responsable por defecto. Mostrar el responsable en listado y detalle.
-i18n y tests de asignación y reasignación. Depende de la tarjeta de
+`triaged` se habilita pasar a `in_progress` con el botón Iniciar, que se
+ofrece tanto en `reported` como en `triaged`. El creador queda como
+responsable por defecto. Mostrar el responsable en listado y detalle; en
+el listado los nombres de los responsables se resuelven con una sola
+consulta, no una por fila.
+
+Asignar es una acción administrativa: solo la ejecutan los
+administradores (admin y developer, que lo supera), y a los demás roles
+no se les muestra el botón. El permiso se comprueba en el servidor, en
+la página de asignar y en su POST, no solo ocultando el botón.
+
+Una vez iniciada la incidencia el responsable queda congelado: no se
+puede cambiar ni desde la UI ni por POST, y la acción Asignar desaparece
+del detalle. Las incidencias terminales mantienen su mensaje propio.
+i18n de los mensajes en los 4 idiomas y tests de asignación,
+reasignación, congelado y rechazo por rol. Depende de la tarjeta de
 FSM.
+
+El responsable es además el dueño de las acciones del ciclo de vida
+(Iniciar, Resolver, Cerrar y Rechazar): un tercero al que la incidencia
+no se le asignó no puede ejecutarlas, ni desde la UI (no se le ofrecen
+los botones) ni por POST (403 en el servidor). Los administradores
+conservan esas acciones aunque la incidencia tenga otro responsable, para
+que una incidencia cuyo responsable no actúa no quede trabada. Las
+incidencias sin responsable --las anteriores a esta regla-- siguen
+pudiendo ser actuadas por cualquiera con acceso. Tests de la propiedad
+de las acciones por rol y por identidad del responsable.
 
 ### Filtrar el listado de incidencias por estado
 

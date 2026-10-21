@@ -252,6 +252,8 @@ func TestIssueStart_ReportedToInProgress(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/issues/1/start", nil)
 	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
 	rec := httptest.NewRecorder()
 	h.IssueStart(rec, req)
 	assertRedirectsTo(t, rec, "/issues/1")
@@ -293,6 +295,8 @@ func TestIssueResolve_InProgressToResolved(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/issues/1/resolve", nil)
 	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
 	rec := httptest.NewRecorder()
 	h.IssueResolve(rec, req)
 
@@ -339,6 +343,8 @@ func TestIssueClose_ResolvedToClosed(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/issues/1/close", nil)
 	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
 	rec := httptest.NewRecorder()
 	h.IssueClose(rec, req)
 
@@ -834,7 +840,9 @@ func TestIssuesList_FiltersByState(t *testing.T) {
 						{"state": "reported", "c": float64(1)},
 					}
 				}
-				listQuery = q
+				if strings.Contains(q, "FROM issues") {
+					listQuery = q
+				}
 				return []map[string]any{
 					{"id": float64(3), "title": "Belt slipping", "state": "in_progress"},
 					{"id": float64(2), "title": "Motor hot", "state": "in_progress"},
@@ -874,7 +882,9 @@ func TestIssuesList_InvalidStateFilterIgnored(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				listQuery = q
+				if strings.Contains(q, "FROM issues") {
+					listQuery = q
+				}
 				return []map[string]any{}
 			})
 		},
@@ -910,6 +920,8 @@ func TestIssueReject_RequiresMotivo(t *testing.T) {
 	req := httptest.NewRequest("POST", "/issues/1/reject", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
 	rec := httptest.NewRecorder()
 	h.IssueReject(rec, req)
 
@@ -953,6 +965,8 @@ func TestIssueReject_WithMotivo_WalksWithPayload(t *testing.T) {
 	req := httptest.NewRequest("POST", "/issues/1/reject", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
 	rec := httptest.NewRecorder()
 	h.IssueReject(rec, req)
 
@@ -1020,7 +1034,9 @@ func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				listQuery = q
+				if strings.Contains(q, "FROM issues") {
+					listQuery = q
+				}
 				return []map[string]any{}
 			})
 		},
@@ -1057,7 +1073,9 @@ func TestIssuesList_SearchPrefillsInput(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				listQuery = q
+				if strings.Contains(q, "FROM issues") {
+					listQuery = q
+				}
 				return []map[string]any{
 					{"id": float64(7), "title": "Belt slipping", "state": "reported"},
 				}
@@ -1132,7 +1150,9 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				listQuery = q
+				if strings.Contains(q, "FROM issues") {
+					listQuery = q
+				}
 				return []map[string]any{
 					{"id": float64(3), "title": "Motor hot", "state": "in_progress"},
 				}
@@ -1469,16 +1489,46 @@ func TestIssueStart_WalkCarriesActor(t *testing.T) {
 	}
 }
 
-
 // --- Assign responsible (card 4) ---
 
 // postIssueForm posts a form to an issue action, setting the {id} path
-// value the handler reads (the router does that in production).
-func postIssueForm(t *testing.T, h http.HandlerFunc, id, target string, fields url.Values) *httptest.ResponseRecorder {
+// value the handler reads (the router does that in production). The role
+// is injected as the session's claims: the assign action is administrative,
+// so its tests need to say who is posting.
+func postIssueForm(t *testing.T, h http.HandlerFunc, id, target string, fields url.Values, role string) *httptest.ResponseRecorder {
+	t.Helper()
+	return postIssueFormAs(t, h, id, target, fields, role, 42)
+}
+
+// postIssueFormAs posts a form as a user with the given role and id, so
+// the tests can act as the issue's responsible (or as somebody else).
+func postIssueFormAs(t *testing.T, h http.HandlerFunc, id, target string, fields url.Values, role string, userID int64) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", target, strings.NewReader(fields.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("id", id)
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: userID, TenantID: 1, Role: role}))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+// getIssueDetail fetches the detail page of an issue as a user with the
+// given role, so the tests can tell an admin's view from another's.
+func getIssueDetail(t *testing.T, h http.HandlerFunc, id, role string) *httptest.ResponseRecorder {
+	t.Helper()
+	return getIssueDetailAs(t, h, id, role, 42)
+}
+
+// getIssueDetailAs fetches the detail page as a user with the given role
+// and id, so the tests can tell the responsible's view from another's.
+func getIssueDetailAs(t *testing.T, h http.HandlerFunc, id, role string, userID int64) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/issues/"+id, nil)
+	req.SetPathValue("id", id)
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: userID, TenantID: 1, Role: role}))
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	return rec
@@ -1554,7 +1604,7 @@ func TestIssueAssign_ReportedFiresTriage(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}}, "admin")
 	assertRedirectsTo(t, rec, "/issues/1")
 	if walkInput != "triage" {
 		t.Errorf("expected walk input %q, got %q", "triage", walkInput)
@@ -1599,7 +1649,7 @@ func TestIssueAssign_NonReportedOnlyRewritesAssignee(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}}, "admin")
 	assertRedirectsTo(t, rec, "/issues/1")
 	if walkInput != "" {
 		t.Errorf("expected no FSM walk for a triaged issue, got input %q", walkInput)
@@ -1638,7 +1688,7 @@ func TestIssueAssign_TerminalRefused(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}}, "admin")
 	if walked {
 		t.Error("expected no FSM walk for a closed issue")
 	}
@@ -1668,7 +1718,7 @@ func TestIssueAssign_RequiresAssignee(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {""}})
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {""}}, "admin")
 	if patched {
 		t.Error("expected no entity patch when the assignee is missing")
 	}
@@ -1709,4 +1759,537 @@ func TestIssueAssignRoutes_Register(t *testing.T) {
 	router, _ := buildRoutingTestRouter(t, true, true)
 	mux := http.NewServeMux()
 	router.MountIssuesRoutes(mux)
+}
+
+// --- Start from triaged, admin-only assign, frozen responsible ---
+
+// TestIssueStart_TriagedToInProgress confirms a triaged issue can be
+// started: the detail page only offered the start action in "reported", so
+// an issue that had already been triaged (assigning someone fires the
+// triage) had no way forward.
+func TestIssueStart_TriagedToInProgress(t *testing.T) {
+	var walkInput string
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "triaged", "current": "in_progress", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueStart, "1", "/issues/1/start", url.Values{}, "admin")
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "start" {
+		t.Errorf("expected walk input %q, got %q", "start", walkInput)
+	}
+	if patched == nil {
+		t.Fatal("xolu.Patch for issues was never called")
+	}
+	if patched["state"] != "in_progress" {
+		t.Errorf("expected state=%q, got %v", "in_progress", patched["state"])
+	}
+}
+
+// TestIssueDetail_TriagedShowsStartAction confirms the detail page of a
+// triaged issue offers the start action.
+func TestIssueDetail_TriagedShowsStartAction(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetail(t, h.IssueDetail, "1", "admin")
+	body := rec.Body.String()
+	if !strings.Contains(body, "/issues/1/start") {
+		t.Error("expected the start action to be offered for a triaged issue")
+	}
+	if !strings.Contains(body, "issues.action.start") {
+		t.Error("expected the start action's label to come from t()")
+	}
+}
+
+// TestIssueDetail_AdminSeesAssignAction confirms an admin is offered the
+// assign action while the issue can still be reassigned.
+func TestIssueDetail_AdminSeesAssignAction(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetail(t, h.IssueDetail, "1", "admin")
+	if !strings.Contains(rec.Body.String(), "/issues/1/assign") {
+		t.Error("expected an admin to be offered the assign action")
+	}
+}
+
+// TestIssueDetail_NonAdminHidesAssignAction confirms the assign action is
+// not offered to users who are not admins: assigning a responsible is an
+// administrative action.
+func TestIssueDetail_NonAdminHidesAssignAction(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetail(t, h.IssueDetail, "1", "operator")
+	if strings.Contains(rec.Body.String(), "/issues/1/assign") {
+		t.Error("expected the assign action to be hidden from a non-admin")
+	}
+}
+
+// TestIssueDetail_AssignActionHiddenOnceStarted confirms the assign action
+// disappears once the issue is started: from then on the responsible is
+// frozen.
+func TestIssueDetail_AssignActionHiddenOnceStarted(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "in_progress", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetail(t, h.IssueDetail, "1", "admin")
+	if strings.Contains(rec.Body.String(), "/issues/1/assign") {
+		t.Error("expected the assign action to be hidden once the issue is started")
+	}
+}
+
+// TestIssueAssign_NonAdminRefused confirms a user who is not an admin
+// cannot assign: the submission is refused with a 403 and neither the FSM
+// nor the entity are touched.
+func TestIssueAssign_NonAdminRefused(t *testing.T) {
+	var walked, patched bool
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"current": "triaged"})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			patched = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}}, "operator")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a non-admin, got %d", rec.Code)
+	}
+	if walked {
+		t.Error("expected no FSM walk for a non-admin")
+	}
+	if patched {
+		t.Error("expected no entity patch for a non-admin")
+	}
+}
+
+// TestIssueAssign_LockedOnceStarted confirms the responsible is frozen once
+// the issue is started: the submission is refused and nothing is written.
+func TestIssueAssign_LockedOnceStarted(t *testing.T) {
+	var walked, patched bool
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "in_progress", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"current": "in_progress"})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			patched = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}}, "admin")
+	if walked {
+		t.Error("expected no FSM walk for a started issue")
+	}
+	if patched {
+		t.Error("expected no entity patch for a started issue")
+	}
+	if rec.Code == http.StatusSeeOther {
+		t.Errorf("expected the assign page to re-render with an error, got redirect to %q", rec.Header().Get("Location"))
+	}
+	if !strings.Contains(rec.Body.String(), "issues.assign.error.locked") {
+		t.Error("expected the frozen-responsible error to be shown")
+	}
+}
+
+// TestIssueAssignForm_NonAdminRefused confirms the assign page itself is
+// not reachable for a user who is not an admin.
+func TestIssueAssignForm_NonAdminRefused(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1/assign", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueAssignFormPage(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a non-admin, got %d", rec.Code)
+	}
+}
+
+// TestIssueAssignForm_LockedOnceStarted confirms the assign page is
+// read-only once the issue is started: the reason is shown and no form is
+// offered.
+func TestIssueAssignForm_LockedOnceStarted(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "in_progress", "machine_id": float64(1), "assignee": float64(9)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1/assign", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "admin"}))
+	rec := httptest.NewRecorder()
+	h.IssueAssignFormPage(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "issues.assign.error.locked") {
+		t.Error("expected the frozen-responsible reason to be shown")
+	}
+	if strings.Contains(body, `name="assignee"`) {
+		t.Error("expected no form to be offered for a started issue")
+	}
+}
+
+// TestIssuesList_ShowsAssignee confirms the list shows who is responsible
+// for each issue, resolving the names with a single query.
+func TestIssuesList_ShowsAssignee(t *testing.T) {
+	var usersQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") {
+					return []map[string]any{}
+				}
+				if strings.Contains(q, "FROM users") {
+					usersQuery = q
+					return []map[string]any{
+						{"id": float64(9), "name": "Ada Lovelace", "email": "ada@example.com"},
+					}
+				}
+				return []map[string]any{
+					{"id": float64(1), "title": "Leaking valve", "state": "reported", "assignee": float64(9)},
+				}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Ada Lovelace") {
+		t.Error("expected the assignee name in the list row")
+	}
+	if !strings.Contains(body, "issues.assignee") {
+		t.Error("expected the assignee label to come from t()")
+	}
+	if !strings.Contains(usersQuery, "id IN (9)") {
+		t.Errorf("expected the assignees to be resolved in one query, got %q", usersQuery)
+	}
+}
+
+// --- The responsible owns the lifecycle actions ---
+
+// TestIssueStart_AssigneeCanStart confirms the issue's responsible can start
+// it: the lifecycle actions belong to the person the issue was handed to.
+func TestIssueStart_AssigneeCanStart(t *testing.T) {
+	var walkInput string
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1), "assignee": float64(42)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "triaged", "current": "in_progress", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueFormAs(t, h.IssueStart, "1", "/issues/1/start", url.Values{}, "operator", 42)
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "start" {
+		t.Errorf("expected walk input %q, got %q", "start", walkInput)
+	}
+	if patched == nil {
+		t.Fatal("xolu.Patch for issues was never called")
+	}
+	if patched["state"] != "in_progress" {
+		t.Errorf("expected state=%q, got %v", "in_progress", patched["state"])
+	}
+}
+
+// TestIssueLifecycle_NotAssigneeRefused confirms that a user who is not the
+// issue's responsible can neither start, resolve, close nor reject it: the
+// issue was handed to somebody else, so the lifecycle is not theirs to run.
+func TestIssueLifecycle_NotAssigneeRefused(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler func(h *UIHandler) http.HandlerFunc
+		target  string
+		fields  url.Values
+	}{
+		{"start", func(h *UIHandler) http.HandlerFunc { return h.IssueStart }, "/issues/1/start", url.Values{}},
+		{"resolve", func(h *UIHandler) http.HandlerFunc { return h.IssueResolve }, "/issues/1/resolve", url.Values{}},
+		{"close", func(h *UIHandler) http.HandlerFunc { return h.IssueClose }, "/issues/1/close", url.Values{}},
+		{"reject", func(h *UIHandler) http.HandlerFunc { return h.IssueReject }, "/issues/1/reject", url.Values{"motivo": {"not a real issue"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			walked := false
+			patched := false
+			server := mockOLU(t, map[string]http.HandlerFunc{
+				"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "in_progress", "machine_id": float64(1), "assignee": float64(9)})
+				},
+				"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+					walked = true
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"previous": "in_progress", "current": "resolved", "terminal": false})
+				},
+				"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+					patched = true
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+				},
+			})
+			defer server.Close()
+			h := newHandler(t, server)
+
+			rec := postIssueFormAs(t, tc.handler(h), "1", tc.target, tc.fields, "operator", 42)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected 403 for a user who is not the responsible, got %d", rec.Code)
+			}
+			if walked {
+				t.Error("expected the FSM not to be walked")
+			}
+			if patched {
+				t.Error("expected the entity not to be patched")
+			}
+		})
+	}
+}
+
+// TestIssueRejectForm_NotAssigneeRefused confirms the reject form is not
+// offered to a user who is not the issue's responsible.
+func TestIssueRejectForm_NotAssigneeRefused(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "in_progress", "machine_id": float64(1), "assignee": float64(9)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1/reject", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueRejectFormPage(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a user who is not the responsible, got %d", rec.Code)
+	}
+}
+
+// TestIssueDetail_AssigneeSeesActions confirms the responsible is offered the
+// lifecycle actions of their issue.
+func TestIssueDetail_AssigneeSeesActions(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1), "assignee": float64(42)})
+		},
+		"GET /api/v1/users/42": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(42), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetailAs(t, h.IssueDetail, "1", "operator", 42)
+	body := rec.Body.String()
+	if !strings.Contains(body, "/issues/1/start") {
+		t.Error("expected the responsible to be offered the start action")
+	}
+	if !strings.Contains(body, "/issues/1/reject") {
+		t.Error("expected the responsible to be offered the reject action")
+	}
+}
+
+// TestIssueDetail_OtherUserHidesActions confirms a user who is not the
+// issue's responsible is offered no lifecycle action at all.
+func TestIssueDetail_OtherUserHidesActions(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Grace Hopper"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetailAs(t, h.IssueDetail, "1", "operator", 42)
+	body := rec.Body.String()
+	if strings.Contains(body, "/issues/1/start") {
+		t.Error("expected the start action to be hidden from a user who is not the responsible")
+	}
+	if strings.Contains(body, "/issues/1/reject") {
+		t.Error("expected the reject action to be hidden from a user who is not the responsible")
+	}
+}
+
+// TestIssueDetail_AdminKeepsActions confirms an admin keeps the lifecycle
+// actions even when the issue was handed to somebody else: admins keep the
+// last word, so an issue whose responsible never acts does not get stuck.
+func TestIssueDetail_AdminKeepsActions(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Grace Hopper"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetailAs(t, h.IssueDetail, "1", "admin", 42)
+	if !strings.Contains(rec.Body.String(), "/issues/1/start") {
+		t.Error("expected an admin to keep the start action")
+	}
+}
+
+// TestIssueStart_WithoutAssigneeAnyoneCan confirms an issue without a
+// responsible is not stuck: anybody with access can still run its lifecycle.
+func TestIssueStart_WithoutAssigneeAnyoneCan(t *testing.T) {
+	walked := false
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "triaged", "current": "in_progress", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueFormAs(t, h.IssueStart, "1", "/issues/1/start", url.Values{}, "operator", 42)
+	assertRedirectsTo(t, rec, "/issues/1")
+	if !walked {
+		t.Error("expected an issue without a responsible to be startable by anybody")
+	}
 }

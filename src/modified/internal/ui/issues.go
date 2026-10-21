@@ -22,6 +22,7 @@ import (
 	"time"
 
 	mi "github.com/ha1tch/minty"
+	"github.com/ha1tch/seam-ui/internal/auth"
 	fe "github.com/ha1tch/seam-ui/internal/formengine"
 	issueschemas "github.com/ha1tch/seam-ui/internal/formengine/schemas/issues"
 	xolu "github.com/ha1tch/xolu/pkg/client"
@@ -34,7 +35,7 @@ type Issue struct {
 	Description    string
 	Priority       string // "critical" | "high" | "medium" | "low"
 	Severity       string // "critical" | "major" | "minor"
-	State          string // "reported" | "in_progress" | "closed"
+	State          string // "reported" | "triaged" | "in_progress" | "on_hold" | "resolved" | "closed" | "rejected" | "duplicate"
 	RejectReason   string
 	MachineID      int64
 	AssetID        int64
@@ -71,6 +72,24 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		TemplateID:   toInt64(e.Data["template_id"]),
 		FormData:     toMap(e.Data["form_data"]),
 	}
+}
+
+// canActOnIssue reports whether the current user may run the lifecycle
+// actions (start, resolve, close, reject) on the given issue. An issue with
+// a responsible belongs to that person: only they -- and the admins, who
+// keep the last word -- may act on it, so a third party can neither start
+// nor resolve nor reject an issue that was handed to someone else. An issue
+// without a responsible keeps the previous behaviour: anyone with access to
+// it may act.
+func (h *UIHandler) canActOnIssue(r *http.Request, issue Issue) bool {
+	u := h.getCurrentUser(r)
+	if u == nil || u.ID == 0 {
+		return false
+	}
+	if issue.Assignee <= 0 || issue.Assignee == u.ID {
+		return true
+	}
+	return auth.RoleRank(u.Role) >= auth.RoleRank(auth.RoleAdmin)
 }
 
 // buildIssueHistory maps xolu's machine history into display entries,
@@ -174,6 +193,49 @@ func (h *UIHandler) resolveUserName(ctx context.Context, id int64) string {
 	return toString(u.Data["email"])
 }
 
+// resolveUserNames resolves several user ids to their display names with a
+// single OQL query, so rendering a list of rows doesn't turn into one
+// request per row. Ids that can't be resolved are simply left out of the
+// map. The query is skipped entirely when there is no id to resolve.
+func (h *UIHandler) resolveUserNames(ctx context.Context, ids []int64) map[int64]string {
+	names := map[int64]string{}
+	if h.xoluClient == nil {
+		return names
+	}
+	seen := map[int64]bool{}
+	parts := []string{}
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	if len(parts) == 0 {
+		return names
+	}
+	query := "SELECT id, name, email FROM users WHERE id IN (" + strings.Join(parts, ", ") + ")"
+	res, err := h.xoluClient.OQL(ctx, query)
+	if err != nil {
+		h.logger.Error("failed to resolve user names", "error", err)
+		return names
+	}
+	for _, row := range res.Data {
+		id := toInt64(row["id"])
+		if id <= 0 {
+			continue
+		}
+		name := toString(row["name"])
+		if name == "" {
+			name = toString(row["email"])
+		}
+		if name != "" {
+			names[id] = name
+		}
+	}
+	return names
+}
+
 // IssuesList handles GET /issues.
 func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
@@ -249,6 +311,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 				State:     toString(row["state"]),
 				MachineID: toInt64(row["machine_id"]),
 				AssetID:   toInt64(row["asset_id"]),
+				Assignee:  toInt64(row["assignee"]),
 			})
 		}
 	} else {
@@ -262,6 +325,17 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 				issues[i].AssetName = toString(asset.Data["name"])
 			}
 		}
+	}
+
+	// 4) Resolve the assignees' names in one query, so the list can show
+	// who is responsible for each issue without a request per row.
+	assigneeIDs := make([]int64, 0, len(issues))
+	for _, iss := range issues {
+		assigneeIDs = append(assigneeIDs, iss.Assignee)
+	}
+	assigneeNames := h.resolveUserNames(ctx, assigneeIDs)
+	for i := range issues {
+		issues[i].AssigneeName = assigneeNames[issues[i].Assignee]
 	}
 
 	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts, SearchQuery: search}
@@ -450,6 +524,8 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	data := assetDetail
 	data.Issue = issue
 	data.CSRFToken = h.GetCSRFToken(w, r)
+	data.CanAssign = h.canAssignIssue(r, issue.State)
+	data.CanAct = h.canActOnIssue(r, issue)
 	if issue.TemplateID > 0 {
 		if tplEntity, err := h.xoluClient.Get(ctx, issueTemplatesEntity, issue.TemplateID); err == nil {
 			tpl := issueTemplateFromRow(tplEntity.Data)
@@ -507,6 +583,15 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 	issue := issueFromEntity(entity)
 
+	// The lifecycle actions belong to the responsible: a third party may
+	// neither start, resolve nor close an issue that was handed to someone
+	// else. Admins keep the last word (see canActOnIssue).
+	if !h.canActOnIssue(r, issue) {
+		h.logger.Info("issue transition refused: not the responsible", "id", id, "input", input, "assignee", issue.Assignee)
+		h.Error403(w, r)
+		return
+	}
+
 	var payload map[string]interface{}
 	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
 		payload = map[string]interface{}{"actor": u.ID}
@@ -515,7 +600,7 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if err != nil {
 		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
 		csrfToken := h.GetCSRFToken(w, r)
-		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error()}
+		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue.State), CanAct: h.canActOnIssue(r, issue)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -533,6 +618,7 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 
 // IssueRejectFormPage handles GET /issues/{id}/reject -- renders the
 // reject form. A reason is mandatory; enforced server-side on submit.
+// Rejecting belongs to the responsible, so anyone else gets a 403.
 func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
 	ctx := r.Context()
@@ -546,7 +632,13 @@ func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) 
 		h.page.RenderError(w, http.StatusNotFound, t("error.not_found"), t("error.not_found"))
 		return
 	}
-	data := IssueRejectData{Issue: issueFromEntity(entity), CSRFToken: h.GetCSRFToken(w, r)}
+	issue := issueFromEntity(entity)
+	if !h.canActOnIssue(r, issue) {
+		h.logger.Info("issue reject form refused: not the responsible", "id", id, "assignee", issue.Assignee)
+		h.Error403(w, r)
+		return
+	}
+	data := IssueRejectData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r)}
 	h.page.Render(w, r, t("issues.reject.title"), "/issues", IssueRejectPage(data, t))
 }
 
@@ -575,6 +667,14 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	}
 	issue := issueFromEntity(entity)
 
+	// Rejecting is a lifecycle action: it belongs to the responsible, like
+	// start and resolve (see canActOnIssue).
+	if !h.canActOnIssue(r, issue) {
+		h.logger.Info("issue reject refused: not the responsible", "id", id, "assignee", issue.Assignee)
+		h.Error403(w, r)
+		return
+	}
+
 	if motivo == "" {
 		h.logger.Info("issue reject refused: motivo required", "id", id)
 		data := IssueRejectData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), Error: t("issues.reject.error.motivo_required")}
@@ -592,7 +692,7 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Info("issue reject walk failed", "id", id, "error", err)
-		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error()}
+		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue.State), CanAct: h.canActOnIssue(r, issue)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -646,10 +746,17 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		if iss.AssetName != "" {
 			assetLine = t("issues.linked_to") + ": " + iss.AssetName
 		}
+		// The responsible, shown on every row so the list says who is on
+		// the issue without opening it.
+		assigneeLine := t("issues.assignee") + ": " + t("issues.unassigned")
+		if iss.AssigneeName != "" {
+			assigneeLine = t("issues.assignee") + ": " + iss.AssigneeName
+		}
 		items[i] = SimpleListItem{
 			Href:     fmt.Sprintf("/issues/%d", iss.ID),
 			Title:    iss.Title,
 			Subtitle: assetLine,
+			Meta:     assigneeLine,
 			Badge:    issueStatusBadge(iss.State, t),
 			Search:   strings.TrimSpace(iss.Title + " " + iss.AssetName),
 		}
@@ -973,6 +1080,17 @@ type IssueDetailData struct {
 	TemplateName string
 	FormFields   []IssueFormField
 
+	// CanAssign tells the page whether the current user may (re)assign the
+	// responsible of this issue: only admins, and only while the issue is
+	// still in a pre-start state (see canAssignIssues).
+	CanAssign bool
+
+	// CanAct tells the page whether the current user may run the lifecycle
+	// actions (start, resolve, close, reject) on this issue: the
+	// responsible, or an admin. An issue without a responsible can be acted
+	// on by anyone (see canActOnIssue).
+	CanAct bool
+
 	// Resolved from the linked asset on read (display only).
 	AssetCategory     string // "critico" | "normal"
 	AssetTypeName     string
@@ -1068,31 +1186,39 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
 						t("issues.reject.motivo")+": "+iss.RejectReason))
 				}
-				switch iss.State {
-				case "reported":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
-						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.start")),
-					))
-				case "in_progress":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
-						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.resolve")),
-					))
-				case "resolved":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
-						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.close")),
-					))
+				// The lifecycle actions belong to the responsible: they are
+				// only offered to them (and to the admins).
+				if data.CanAct {
+					switch iss.State {
+					case "reported", "triaged":
+						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
+							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+								t("issues.action.start")),
+						))
+					case "in_progress":
+						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
+							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+								t("issues.action.resolve")),
+						))
+					case "resolved":
+						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
+							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+								t("issues.action.close")),
+						))
+					}
 				}
-				if iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+				// The assign action is administrative and only offered while
+				// the responsible can still be changed.
+				if data.CanAssign {
 					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
 						mi.Class("mt-4 inline-block px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
 						t("issues.action.assign"),
 					))
+				}
+				if data.CanAct && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
 					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
 						mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
 						t("issues.action.reject"),
