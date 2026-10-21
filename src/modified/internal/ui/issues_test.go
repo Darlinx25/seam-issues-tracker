@@ -1469,3 +1469,244 @@ func TestIssueStart_WalkCarriesActor(t *testing.T) {
 	}
 }
 
+
+// --- Assign responsible (card 4) ---
+
+// postIssueForm posts a form to an issue action, setting the {id} path
+// value the handler reads (the router does that in production).
+func postIssueForm(t *testing.T, h http.HandlerFunc, id, target string, fields url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", target, strings.NewReader(fields.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+// TestIssueCreate_DefaultsAssigneeToCreator confirms a new issue is born
+// already assigned to the user who reported it (option A: the creator is
+// the initial assignee).
+func TestIssueCreate_DefaultsAssigneeToCreator(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"title": {"Leaking valve"}}
+	req := httptest.NewRequest("POST", "/issues", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "manager"}))
+	rec := httptest.NewRecorder()
+	h.IssueCreate(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if created == nil {
+		t.Fatal("xolu.Create for issues was never called")
+	}
+	if created["assignee"] != 42.0 {
+		t.Errorf("expected assignee=42 (session user), got %v", created["assignee"])
+	}
+}
+
+// TestIssueAssign_ReportedFiresTriage confirms that assigning an issue
+// that is still in "reported" also walks the FSM with input "triage", and
+// that both the new state and the assignee are written to the entity.
+func TestIssueAssign_ReportedFiresTriage(t *testing.T) {
+	var walkInput string
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "previous": "reported", "current": "triaged", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "triage" {
+		t.Errorf("expected walk input %q, got %q", "triage", walkInput)
+	}
+	if patched == nil {
+		t.Fatal("xolu.Patch for issues was never called")
+	}
+	if patched["assignee"] != 7.0 {
+		t.Errorf("expected assignee=7, got %v", patched["assignee"])
+	}
+	if patched["state"] != "triaged" {
+		t.Errorf("expected state=%q after triage, got %v", "triaged", patched["state"])
+	}
+}
+
+// TestIssueAssign_NonReportedOnlyRewritesAssignee confirms that assigning
+// an issue in a non-terminal state other than "reported" only rewrites the
+// assignee -- the FSM is left alone.
+func TestIssueAssign_NonReportedOnlyRewritesAssignee(t *testing.T) {
+	var walkInput string
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "triaged", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"current": "triaged"})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "" {
+		t.Errorf("expected no FSM walk for a triaged issue, got input %q", walkInput)
+	}
+	if patched == nil {
+		t.Fatal("xolu.Patch for issues was never called")
+	}
+	if patched["assignee"] != 7.0 {
+		t.Errorf("expected assignee=7, got %v", patched["assignee"])
+	}
+	if _, ok := patched["state"]; ok {
+		t.Errorf("expected no state rewrite outside reported, got %v", patched["state"])
+	}
+}
+
+// TestIssueAssign_TerminalRefused confirms a closed issue cannot be
+// assigned: the FSM and the entity are both left untouched.
+func TestIssueAssign_TerminalRefused(t *testing.T) {
+	var walked, patched bool
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "closed", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"current": "closed"})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			patched = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {"7"}})
+	if walked {
+		t.Error("expected no FSM walk for a closed issue")
+	}
+	if patched {
+		t.Error("expected no entity patch for a closed issue")
+	}
+	if rec.Code == http.StatusSeeOther {
+		t.Errorf("expected the assign page to re-render with an error, got redirect to %q", rec.Header().Get("Location"))
+	}
+}
+
+// TestIssueAssign_RequiresAssignee confirms the assignee is mandatory:
+// a submission without one re-renders with an error and never writes.
+func TestIssueAssign_RequiresAssignee(t *testing.T) {
+	var patched bool
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1)})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			patched = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueForm(t, h.IssueAssign, "1", "/issues/1/assign", url.Values{"assignee": {""}})
+	if patched {
+		t.Error("expected no entity patch when the assignee is missing")
+	}
+	if rec.Code == http.StatusSeeOther {
+		t.Errorf("expected the assign page to re-render with an error, got redirect to %q", rec.Header().Get("Location"))
+	}
+}
+
+// TestIssueDetail_ShowsAssigneeName confirms the issue detail page shows
+// the resolved name of the assignee.
+func TestIssueDetail_ShowsAssigneeName(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Leaking valve", "state": "reported", "machine_id": float64(1), "assignee": float64(9)})
+		},
+		"GET /api/v1/users/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Ada Lovelace"})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if body := rec.Body.String(); !strings.Contains(body, "Ada Lovelace") {
+		t.Errorf("expected the assignee name in the detail page")
+	}
+}
+
+// TestIssueAssignRoutes_Register confirms the assign routes are mounted
+// alongside the rest of the issue routes.
+func TestIssueAssignRoutes_Register(t *testing.T) {
+	router, _ := buildRoutingTestRouter(t, true, true)
+	mux := http.NewServeMux()
+	router.MountIssuesRoutes(mux)
+}

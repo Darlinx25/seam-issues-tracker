@@ -41,6 +41,8 @@ type Issue struct {
 	AssetName      string // resolved, not stored -- populated on read for display
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
+	Assignee       int64
+	AssigneeName   string
 	CreatedAt      string
 
 	// TemplateID is the specific template version the issue was created
@@ -65,6 +67,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		AssetID:      toInt64(e.Data["asset_id"]),
 		CreatedAt:    toString(e.Data["created_at"]),
 		ReportedBy:   toInt64(e.Data["reported_by"]),
+		Assignee:     toInt64(e.Data["assignee"]),
 		TemplateID:   toInt64(e.Data["template_id"]),
 		FormData:     toMap(e.Data["form_data"]),
 	}
@@ -153,6 +156,22 @@ func (h *UIHandler) resolveAssetCategory(ctx context.Context, assetID int64) str
 		return "normal"
 	}
 	return assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))
+}
+
+// resolveUserName resolves a user id to its display name, reading the
+// "users" entity directly. Returns an empty string when the user is gone.
+func (h *UIHandler) resolveUserName(ctx context.Context, id int64) string {
+	if id <= 0 || h.xoluClient == nil {
+		return ""
+	}
+	u, err := h.xoluClient.Get(ctx, "users", id)
+	if err != nil {
+		return ""
+	}
+	if name := toString(u.Data["name"]); name != "" {
+		return name
+	}
+	return toString(u.Data["email"])
 }
 
 // IssuesList handles GET /issues.
@@ -370,6 +389,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if currentUser != nil && currentUser.ID > 0 {
 		issueData["reported_by"] = currentUser.ID
+		issueData["assignee"] = currentUser.ID
 	}
 
 	entity, err := h.xoluClient.Create(ctx, "issues", issueData)
@@ -422,6 +442,9 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 		if u, err := h.xoluClient.Get(ctx, "users", issue.ReportedBy); err == nil {
 			issue.ReportedByName = toString(u.Data["name"])
 		}
+	}
+	if issue.Assignee > 0 {
+		issue.AssigneeName = h.resolveUserName(ctx, issue.Assignee)
 	}
 
 	data := assetDetail
@@ -1008,6 +1031,14 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
 					))
 				}
+				assigneeLabel := iss.AssigneeName
+				if assigneeLabel == "" {
+					assigneeLabel = t("issues.unassigned")
+				}
+				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.assignee")+": "),
+					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), assigneeLabel),
+				))
 				if data.TemplateName != "" {
 					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
 						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.template_label")+": "),
@@ -1058,6 +1089,10 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					))
 				}
 				if iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
+						mi.Class("mt-4 inline-block px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
+						t("issues.action.assign"),
+					))
 					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
 						mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
 						t("issues.action.reject"),

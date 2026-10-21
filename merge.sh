@@ -45,13 +45,13 @@ echo "Output:   $OUTPUT_DIR"
 echo ""
 
 # Step 1: Extract ZIP
-echo "[1/5] Extracting ZIP..."
+echo "[1/6] Extracting ZIP..."
 mkdir -p "$OUTPUT_DIR"
 unzip -o "$ZIP" -d "$OUTPUT_DIR" > /dev/null
 echo "  Extracted to $OUTPUT_DIR"
 
 # Step 2: Overlay modified files
-echo "[2/5] Applying modified files..."
+echo "[2/6] Applying modified files..."
 MODIFIED_DIR="$SCRIPT_DIR/src/modified"
 if [ -d "$MODIFIED_DIR" ]; then
     FIND_CMD=(find "$MODIFIED_DIR" -type f)
@@ -73,7 +73,7 @@ else
 fi
 
 # Step 3: Copy new files
-echo "[3/5] Adding new files..."
+echo "[3/6] Adding new files..."
 NEW_DIR="$SCRIPT_DIR/src/new"
 if [ -d "$NEW_DIR" ]; then
     FIND_CMD=(find "$NEW_DIR" -type f)
@@ -94,7 +94,7 @@ else
 fi
 
 # Step 4: Apply patches
-echo "[4/5] Applying patches..."
+echo "[4/6] Applying patches..."
 PATCHES_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCHES_DIR" ] && ls "$PATCHES_DIR"/*.patch > /dev/null 2>&1; then
     for patch in "$PATCHES_DIR"/*.patch; do
@@ -109,7 +109,7 @@ else
 fi
 
 # Step 5: Fix go.mod (remove broken replace directives, update deps)
-echo "[5/5] Fixing go.mod..."
+echo "[5/6] Fixing go.mod..."
 cd "$OUTPUT_DIR"
 if grep -q "^replace" go.mod 2>/dev/null; then
     echo "  Found replace directive in go.mod — fixing..."
@@ -131,6 +131,20 @@ if grep -q "^replace" go.mod 2>/dev/null; then
     echo "  go.mod fixed: xolu updated to $NEW_XOLU, replace directives removed"
 else
     echo "  go.mod looks clean, skipping fix"
+fi
+
+# Step 6: Register the assign routes and merge the issues translation keys
+echo "[6/6] Registering assign routes and merging locales..."
+if [ -f "$OUTPUT_DIR/internal/ui/router.go" ] && [ -f "$SCRIPT_DIR/fix_router.py" ]; then
+    python3 "$SCRIPT_DIR/fix_router.py" "$OUTPUT_DIR/internal/ui/router.go"
+fi
+if [ -f "$SCRIPT_DIR/merge_locales.py" ]; then
+    for L in en es pt ja; do
+        LF="$OUTPUT_DIR/internal/i18n/locales/$L.json"
+        if [ -f "$LF" ]; then
+            python3 "$SCRIPT_DIR/merge_locales.py" "$LF" "$L"
+        fi
+    done
 fi
 
 echo ""
