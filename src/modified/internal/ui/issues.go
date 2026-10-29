@@ -49,28 +49,38 @@ type Issue struct {
 	// TemplateID is the specific template version the issue was created
 	// with; FormData holds the custom field values it captured. Both are
 	// frozen onto the issue so later template edits don't alter history.
-	TemplateID int64
-	FormData   map[string]any
+	TemplateID               int64
+	FormData                 map[string]any
+	AssetCategory            string
+	SLAFirstResponseDeadline string
+	SLAResolutionDeadline    string
+	FirstResponseAt          string
+	FirstRespondedBy         int64
 }
 
 const issueDefName = "seam_issue_lifecycle"
 
 func issueFromEntity(e *xolu.Entity) Issue {
 	return Issue{
-		ID:           e.ID,
-		Title:        toString(e.Data["title"]),
-		Description:  toString(e.Data["description"]),
-		Priority:     toString(e.Data["priority"]),
-		Severity:     toString(e.Data["severity"]),
-		State:        toString(e.Data["state"]),
-		RejectReason: toString(e.Data["reject_reason"]),
-		MachineID:    toInt64(e.Data["machine_id"]),
-		AssetID:      toInt64(e.Data["asset_id"]),
-		CreatedAt:    toString(e.Data["created_at"]),
-		ReportedBy:   toInt64(e.Data["reported_by"]),
-		Assignee:     toInt64(e.Data["assignee"]),
-		TemplateID:   toInt64(e.Data["template_id"]),
-		FormData:     toMap(e.Data["form_data"]),
+		ID:                      e.ID,
+		Title:                   toString(e.Data["title"]),
+		Description:             toString(e.Data["description"]),
+		Priority:                toString(e.Data["priority"]),
+		Severity:                toString(e.Data["severity"]),
+		State:                   toString(e.Data["state"]),
+		RejectReason:            toString(e.Data["reject_reason"]),
+		MachineID:               toInt64(e.Data["machine_id"]),
+		AssetID:                 toInt64(e.Data["asset_id"]),
+		CreatedAt:               toString(e.Data["created_at"]),
+		ReportedBy:              toInt64(e.Data["reported_by"]),
+		Assignee:                toInt64(e.Data["assignee"]),
+		TemplateID:              toInt64(e.Data["template_id"]),
+		FormData:                toMap(e.Data["form_data"]),
+		AssetCategory:           toString(e.Data["asset_category"]),
+		SLAFirstResponseDeadline: toString(e.Data["sla_first_response_deadline"]),
+		SLAResolutionDeadline:    toString(e.Data["sla_resolution_deadline"]),
+		FirstResponseAt:         toString(e.Data["first_response_at"]),
+		FirstRespondedBy:        toInt64(e.Data["first_responded_by"]),
 	}
 }
 
@@ -175,6 +185,160 @@ func (h *UIHandler) resolveAssetCategory(ctx context.Context, assetID int64) str
 		return "normal"
 	}
 	return assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))
+}
+
+// defaultSLAFirstResponseMinutes returns fallback minutes for first response
+// based on priority + assetCategory (fixed in code).
+func defaultSLAFirstResponseMinutes(priority, assetCategory string) int64 {
+	switch assetCategory {
+	case "critico":
+		switch priority {
+		case "critical":
+			return 60
+		case "high":
+			return 120
+		case "medium":
+			return 240
+		case "low":
+			return 240
+		default:
+			return 120
+		}
+	default:
+		switch priority {
+		case "critical":
+			return 120
+		case "high":
+			return 240
+		case "medium":
+			return 480
+		case "low":
+			return 480
+		default:
+			return 240
+		}
+	}
+}
+
+// defaultSLAResolutionMinutes returns fallback minutes for resolution.
+func defaultSLAResolutionMinutes(priority, assetCategory string) int64 {
+	switch assetCategory {
+	case "critico":
+		switch priority {
+		case "critical":
+			return 240
+		case "high":
+			return 1440
+		case "medium":
+			return 2880
+		case "low":
+			return 2880
+		default:
+			return 1440
+		}
+	default:
+		switch priority {
+		case "critical":
+			return 1440
+		case "high":
+			return 2880
+		case "medium":
+			return 10080
+		case "low":
+			return 10080
+		default:
+			return 2880
+		}
+	}
+}
+
+func calculateSLADeadlineFromMinutes(minutes int64, now time.Time) string {
+	if minutes <= 0 {
+		return ""
+	}
+	return now.Add(time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339)
+}
+
+func slaMinutesFromTemplate(tpl *IssueTemplate, kind string, priority string) int64 {
+	if tpl == nil || tpl.SLAConfig == nil {
+		return 0
+	}
+	if m, ok := tpl.SLAConfig[kind]; ok {
+		if v, ok := m[priority]; ok && v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func formatDurationMinutes(m int64) string {
+	if m < 0 {
+		m = 0
+	}
+	if m == 0 {
+		return "0m"
+	}
+	d := m / (24 * 60)
+	h := (m % (24 * 60)) / 60
+	mi := m % 60
+	var parts []string
+	if d > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", d))
+	}
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", h))
+	}
+	if mi > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%dm", mi))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatTimeShort(s string) string {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.Format("02/01 15:04")
+}
+
+// calculateSLADeadline computes the SLA deadline as a function of the
+// issue priority and the stored asset category. The table is fixed in
+// code per the canonical roadmap:
+//   critical asset (critico): critical 4h, high 24h, medium 48h
+//   normal asset (normal):    critical 24h, high 48h, medium 7d
+// Any unrecognised combination falls back to a safe default.
+func calculateSLADeadline(priority, assetCategory string, now time.Time) string {
+	var d time.Duration
+	switch assetCategory {
+	case "critico":
+		switch priority {
+		case "critical":
+			d = 4 * time.Hour
+		case "high":
+			d = 24 * time.Hour
+		case "medium":
+			d = 48 * time.Hour
+		case "low":
+			d = 48 * time.Hour
+		default:
+			d = 24 * time.Hour
+		}
+	default:
+		switch priority {
+		case "critical":
+			d = 24 * time.Hour
+		case "high":
+			d = 48 * time.Hour
+		case "medium":
+			d = 7 * 24 * time.Hour
+		case "low":
+			d = 7 * 24 * time.Hour
+		default:
+			d = 48 * time.Hour
+		}
+	}
+	return now.Add(d).UTC().Format(time.RFC3339)
 }
 
 // resolveUserName resolves a user id to its display name, reading the
@@ -444,6 +608,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now().UTC()
 	issueData := map[string]any{
 		"title":       title,
 		"description": description,
@@ -451,12 +616,31 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		"severity":    severity,
 		"state":       machine.State,
 		"machine_id":  machine.ID,
-		"created_at":  time.Now().UTC().Format(time.RFC3339),
+		"created_at":  now.Format(time.RFC3339),
 	}
 	if assetID > 0 {
 		issueData["asset_id"] = assetID
 	}
-	issueData["asset_category"] = h.resolveAssetCategory(ctx, assetID)
+	assetCategory := h.resolveAssetCategory(ctx, assetID)
+	issueData["asset_category"] = assetCategory
+
+	var firstRespMin, resMin int64
+	if tpl != nil {
+		firstRespMin = slaMinutesFromTemplate(tpl, "first_response", priority)
+		resMin = slaMinutesFromTemplate(tpl, "resolution", priority)
+	}
+	if firstRespMin <= 0 {
+		firstRespMin = defaultSLAFirstResponseMinutes(priority, assetCategory)
+	}
+	if resMin <= 0 {
+		resMin = defaultSLAResolutionMinutes(priority, assetCategory)
+	}
+	if d := calculateSLADeadlineFromMinutes(firstRespMin, now); d != "" {
+		issueData["sla_first_response_deadline"] = d
+	}
+	if d := calculateSLADeadlineFromMinutes(resMin, now); d != "" {
+		issueData["sla_resolution_deadline"] = d
+	}
 	if tpl != nil {
 		issueData["template_id"] = tpl.ID
 		issueData["form_data"] = formData
@@ -590,6 +774,23 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 		h.logger.Info("issue transition refused: not the responsible", "id", id, "input", input, "assignee", issue.Assignee)
 		h.Error403(w, r)
 		return
+	}
+
+	// Mark first response only once when starting
+	if input == "start" && issue.FirstResponseAt == "" {
+		if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
+			now := time.Now().UTC()
+			patch := map[string]any{
+				"first_response_at": now.Format(time.RFC3339),
+				"first_responded_by": u.ID,
+			}
+			if _, err := h.xoluClient.Patch(ctx, "issues", issue.ID, patch); err != nil {
+				h.logger.Error("failed to mark first response", "id", issue.ID, "error", err)
+			} else {
+				issue.FirstResponseAt = patch["first_response_at"].(string)
+				issue.FirstRespondedBy = u.ID
+			}
+		}
 	}
 
 	var payload map[string]interface{}
@@ -1105,7 +1306,252 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 	}
 	iss := data.Issue
 	return func(b *mi.Builder) mi.Node {
-		return b.Div(mi.Class("space-y-6 max-w-2xl"),
+		now := time.Now()
+
+		mainCard := Card("", func(b *mi.Builder) mi.Node {
+			var children []interface{}
+			children = append(children,
+				b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), iss.Description),
+			)
+			if iss.AssetID > 0 {
+				if data.AssetMissing {
+					children = append(children, b.Div(mi.Class("mt-4 text-sm text-amber-600 dark:text-amber-400"),
+						t("issues.asset.unavailable")))
+				} else {
+					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.linked_to")+": "),
+						b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
+					))
+					children = append(children,
+						b.Div(mi.Class("mt-1 text-sm"),
+							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.category")+": "),
+							b.Span(mi.Class("text-gray-700 dark:text-gray-300"), t("issues.asset.category."+data.AssetCategory)),
+						),
+						b.Div(mi.Class("mt-1 text-sm"),
+							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.type")+": "),
+							b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetTypeName),
+						),
+						b.Div(mi.Class("mt-1 text-sm"),
+							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.location")+": "),
+							b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetLocationName),
+						),
+					)
+				}
+			}
+			if iss.ReportedByName != "" {
+				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
+					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
+				))
+			}
+			assigneeLabel := iss.AssigneeName
+			if assigneeLabel == "" {
+				assigneeLabel = t("issues.unassigned")
+			}
+			children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+				b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.assignee")+": "),
+				b.Span(mi.Class("text-gray-700 dark:text-gray-300"), assigneeLabel),
+			))
+			if data.TemplateName != "" {
+				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
+					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.template_label")+": "),
+					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.TemplateName),
+				))
+			}
+			if len(data.FormFields) > 0 {
+				var fieldRows []interface{}
+				fieldRows = append(fieldRows, b.H3(mi.Class("text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"), t("issues.form_data")))
+				for _, f := range data.FormFields {
+					label := f.Label
+					if label == "" {
+						label = f.Key
+					}
+					fieldRows = append(fieldRows, b.Div(mi.Class("flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
+						b.Span(mi.Class("text-sm text-gray-500 dark:text-gray-400"), label),
+						b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), f.Value),
+					))
+				}
+				children = append(children, b.Div(append([]interface{}{mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700")}, fieldRows...)...))
+			}
+			if data.WalkError != "" {
+				children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
+					data.WalkError))
+			}
+			if iss.RejectReason != "" {
+				children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
+					t("issues.reject.motivo")+": "+iss.RejectReason))
+			}
+			if data.CanAct {
+				switch iss.State {
+				case "reported", "triaged":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+							t("issues.action.start")),
+					))
+				case "in_progress":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+							t("issues.action.resolve")),
+					))
+				case "resolved":
+					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+							t("issues.action.close")),
+					))
+				}
+			}
+			if data.CanAssign {
+				children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
+					mi.Class("mt-4 inline-block px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
+					t("issues.action.assign"),
+				))
+			}
+			if data.CanAct && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+				children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
+					mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
+					t("issues.action.reject"),
+				))
+			}
+			return b.Div(children...)
+		})(b)
+
+		historyCard := Card(t("issues.history.title"), func(b *mi.Builder) mi.Node {
+			if len(data.History) == 0 {
+				return b.P(mi.Class("text-sm text-gray-400 italic"), t("issues.history.empty"))
+			}
+			var rows []interface{}
+			for _, e := range data.History {
+				label := t("issues.history.action." + e.Action)
+				if e.Action == "created" {
+					label = t("issues.history.created")
+				}
+				meta := e.At
+				if e.ActorName != "" {
+					meta = e.ActorName + " · " + e.At
+				} else if e.ActorID > 0 {
+					meta = "#" + strconv.FormatInt(e.ActorID, 10) + " · " + e.At
+				}
+
+				parts := []interface{}{
+					b.Div(mi.Class("flex items-center justify-between gap-3"),
+						b.Span(mi.Class("text-sm font-medium text-gray-900 dark:text-white"), label),
+						b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"), meta),
+					),
+				}
+				if e.From != "" && e.To != "" {
+					parts = append(parts, b.Div(mi.Class("text-xs text-gray-500 dark:text-gray-400"),
+						t("issues.state."+e.From)+" → "+t("issues.state."+e.To)))
+				}
+				if e.Reason != "" {
+					parts = append(parts, b.Div(mi.Class("mt-1 text-xs text-amber-700 dark:text-amber-400"),
+						t("issues.history.reason")+": "+e.Reason))
+				}
+				if e.Canonical > 0 {
+					parts = append(parts, b.Div(mi.Class("mt-1 text-xs"),
+						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.history.duplicate_of")+": "),
+						b.A(mi.Href(fmt.Sprintf("/issues/%d", e.Canonical)),
+							mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"),
+							"#"+strconv.FormatInt(e.Canonical, 10)),
+					))
+				}
+				rows = append(rows, b.Div(append([]interface{}{
+					mi.Class("px-4 py-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 space-y-1"),
+				}, parts...)...))
+			}
+			return b.Div(rows...)
+		})(b)
+
+		var slaCard mi.Node
+		isTerminal := iss.State == "closed" || iss.State == "rejected" || iss.State == "duplicate"
+		showFirst := iss.FirstResponseAt == "" && iss.SLAFirstResponseDeadline != ""
+		showRes := !showFirst && iss.FirstResponseAt != "" && iss.SLAResolutionDeadline != "" && !isTerminal
+		if showFirst || showRes {
+			var title string
+			var deadline string
+			if showFirst {
+				title = t("issues.sla.first_response")
+				deadline = iss.SLAFirstResponseDeadline
+			} else {
+				title = t("issues.sla.resolution")
+				deadline = iss.SLAResolutionDeadline
+			}
+			if dl, err := time.Parse(time.RFC3339, deadline); err == nil {
+				var created time.Time
+				if c, err2 := time.Parse(time.RFC3339, iss.CreatedAt); err2 == nil {
+					created = c
+				}
+				total := dl.Sub(created)
+				if total < 0 {
+					total = 0
+				}
+				totalMin := int64(total / time.Minute)
+				var elapsed time.Duration
+				if now.Before(created) {
+					elapsed = 0
+				} else {
+					elapsed = now.Sub(created)
+				}
+				var pct int
+				if total > 0 {
+					pct = int((elapsed * 100) / total)
+				}
+				if pct < 0 {
+					pct = 0
+				}
+				if pct > 100 {
+					pct = 100
+				}
+				barColor := "bg-indigo-500"
+				if pct >= 90 {
+					barColor = "bg-red-500"
+				} else if pct >= 70 {
+					barColor = "bg-amber-500"
+				}
+				if now.After(dl) && !isTerminal {
+					barColor = "bg-red-600"
+					pct = 100
+				}
+				remaining := dl.Sub(now)
+				remTxt := t("issues.sla.remaining") + ": " + formatDurationMinutes(int64(remaining/time.Minute))
+				if remaining < 0 && !isTerminal {
+					remTxt = t("issues.sla.overdue_by") + ": " + formatDurationMinutes(int64(-remaining/time.Minute))
+				}
+				prioLabel := iss.Priority
+				if p := t("issues.priority." + iss.Priority); p != "" && !strings.Contains(p, ".") {
+					prioLabel = p
+				}
+				maxTxt := formatDurationMinutes(totalMin)
+				slaCard = Card(title, func(b *mi.Builder) mi.Node {
+					return b.Div(mi.Class("space-y-3"),
+						b.Div(mi.Class("text-center text-sm font-medium text-gray-900 dark:text-white"), remTxt),
+						b.Div(mi.Class("w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2"),
+							b.Div(mi.Class(barColor+" h-2 rounded-full"), mi.Style("width: "+strconv.Itoa(pct)+"%")),
+						),
+						b.Div(mi.Class("flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"),
+							b.Span(t("issues.sla.starts_at")+": "+formatTimeShort(iss.CreatedAt)),
+							b.Span(t("issues.sla.due_at")+": "+formatTimeShort(deadline)),
+						),
+						b.Div(mi.Class("border-t border-dashed border-gray-200 dark:border-gray-700 pt-2 text-xs text-gray-600 dark:text-gray-300 space-y-1"),
+							b.Div(t("issues.sla.priority")+": "+prioLabel),
+							b.Div(t("issues.sla.max_time")+": "+maxTxt),
+						),
+					)
+				})(b)
+			}
+		}
+
+		rightCol := []interface{}{slaCard, historyCard}
+		rightDivArgs := []interface{}{mi.Class("space-y-6")}
+		for _, n := range rightCol {
+			if n != nil {
+				rightDivArgs = append(rightDivArgs, n)
+			}
+		}
+
+		return b.Div(mi.Class("space-y-6"),
 			b.Div(mi.Class("flex items-center gap-4"),
 				b.A(mi.Href("/issues"), mi.Class("text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"),
 					b.Span(mi.Class("material-icons"), "arrow_back"),
@@ -1113,164 +1559,10 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), iss.Title),
 				issueStatusBadge(iss.State, t)(b),
 			),
-			Card("", func(b *mi.Builder) mi.Node {
-				var children []interface{}
-				children = append(children,
-					b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), iss.Description),
-				)
-				if iss.AssetID > 0 {
-					if data.AssetMissing {
-						children = append(children, b.Div(mi.Class("mt-4 text-sm text-amber-600 dark:text-amber-400"),
-							t("issues.asset.unavailable")))
-					} else {
-						children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.linked_to")+": "),
-							b.A(mi.Href(fmt.Sprintf("/assets/%d", iss.AssetID)), mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"), iss.AssetName),
-						))
-						children = append(children,
-							b.Div(mi.Class("mt-1 text-sm"),
-								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.category")+": "),
-								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), t("issues.asset.category."+data.AssetCategory)),
-							),
-							b.Div(mi.Class("mt-1 text-sm"),
-								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.type")+": "),
-								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetTypeName),
-							),
-							b.Div(mi.Class("mt-1 text-sm"),
-								b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.asset.location")+": "),
-								b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.AssetLocationName),
-							),
-						)
-					}
-				}
-				if iss.ReportedByName != "" {
-					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
-						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
-					))
-				}
-				assigneeLabel := iss.AssigneeName
-				if assigneeLabel == "" {
-					assigneeLabel = t("issues.unassigned")
-				}
-				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.assignee")+": "),
-					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), assigneeLabel),
-				))
-				if data.TemplateName != "" {
-					children = append(children, b.Div(mi.Class("mt-4 text-sm"),
-						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.template_label")+": "),
-						b.Span(mi.Class("text-gray-700 dark:text-gray-300"), data.TemplateName),
-					))
-				}
-				if len(data.FormFields) > 0 {
-					var fieldRows []interface{}
-					fieldRows = append(fieldRows, b.H3(mi.Class("text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"), t("issues.form_data")))
-					for _, f := range data.FormFields {
-						label := f.Label
-						if label == "" {
-							label = f.Key
-						}
-						fieldRows = append(fieldRows, b.Div(mi.Class("flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
-							b.Span(mi.Class("text-sm text-gray-500 dark:text-gray-400"), label),
-							b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), f.Value),
-						))
-					}
-					children = append(children, b.Div(append([]interface{}{mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700")}, fieldRows...)...))
-				}
-				if data.WalkError != "" {
-					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400"),
-						data.WalkError))
-				}
-				if iss.RejectReason != "" {
-					children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
-						t("issues.reject.motivo")+": "+iss.RejectReason))
-				}
-				// The lifecycle actions belong to the responsible: they are
-				// only offered to them (and to the admins).
-				if data.CanAct {
-					switch iss.State {
-					case "reported", "triaged":
-						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
-							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-								t("issues.action.start")),
-						))
-					case "in_progress":
-						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
-							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-								t("issues.action.resolve")),
-						))
-					case "resolved":
-						children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
-							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-								t("issues.action.close")),
-						))
-					}
-				}
-				// The assign action is administrative and only offered while
-				// the responsible can still be changed.
-				if data.CanAssign {
-					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
-						mi.Class("mt-4 inline-block px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
-						t("issues.action.assign"),
-					))
-				}
-				if data.CanAct && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
-					children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
-						mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
-						t("issues.action.reject"),
-					))
-				}
-				return b.Div(children...)
-			})(b),
-			Card(t("issues.history.title"), func(b *mi.Builder) mi.Node {
-				if len(data.History) == 0 {
-					return b.P(mi.Class("text-sm text-gray-400 italic"), t("issues.history.empty"))
-				}
-				var rows []interface{}
-				for _, e := range data.History {
-					label := t("issues.history.action." + e.Action)
-					if e.Action == "created" {
-						label = t("issues.history.created")
-					}
-					meta := e.At
-					if e.ActorName != "" {
-						meta = e.ActorName + " · " + e.At
-					} else if e.ActorID > 0 {
-						meta = "#" + strconv.FormatInt(e.ActorID, 10) + " · " + e.At
-					}
-
-					parts := []interface{}{
-						b.Div(mi.Class("flex items-center justify-between gap-3"),
-							b.Span(mi.Class("text-sm font-medium text-gray-900 dark:text-white"), label),
-							b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"), meta),
-						),
-					}
-					if e.From != "" && e.To != "" {
-						parts = append(parts, b.Div(mi.Class("text-xs text-gray-500 dark:text-gray-400"),
-							t("issues.state."+e.From)+" → "+t("issues.state."+e.To)))
-					}
-					if e.Reason != "" {
-						parts = append(parts, b.Div(mi.Class("mt-1 text-xs text-amber-700 dark:text-amber-400"),
-							t("issues.history.reason")+": "+e.Reason))
-					}
-					if e.Canonical > 0 {
-						parts = append(parts, b.Div(mi.Class("mt-1 text-xs"),
-							b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.history.duplicate_of")+": "),
-							b.A(mi.Href(fmt.Sprintf("/issues/%d", e.Canonical)),
-								mi.Class("text-indigo-600 dark:text-indigo-400 hover:underline"),
-								"#"+strconv.FormatInt(e.Canonical, 10)),
-						))
-					}
-					rows = append(rows, b.Div(append([]interface{}{
-						mi.Class("px-4 py-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 space-y-1"),
-					}, parts...)...))
-				}
-				return b.Div(rows...)
-			})(b),
+			b.Div(mi.Class("grid grid-cols-1 lg:grid-cols-3 gap-6"),
+				b.Div(mi.Class("lg:col-span-2 space-y-6"), mainCard),
+				b.Div(rightDivArgs...),
+			),
 		)
 	}
 }

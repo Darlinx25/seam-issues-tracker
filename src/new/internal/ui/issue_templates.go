@@ -38,6 +38,8 @@ type IssueTemplate struct {
 	Fields      []TemplateField
 	IsCurrent   bool
 	CreatedAt   string
+
+	SLAConfig map[string]map[string]int64 // {"first_response":{"critical":60,...}, "resolution":{...}}
 }
 
 const issueTemplatesEntity = "issue_templates"
@@ -79,7 +81,7 @@ func slugify(s string) string {
 }
 
 func issueTemplateFromRow(row map[string]any) IssueTemplate {
-	return IssueTemplate{
+	tpl := IssueTemplate{
 		ID:          toInt64(row["id"]),
 		Key:         toString(row["key"]),
 		Name:        toString(row["name"]),
@@ -89,6 +91,23 @@ func issueTemplateFromRow(row map[string]any) IssueTemplate {
 		IsCurrent:   toBool(row["is_current"]),
 		CreatedAt:   toString(row["created_at"]),
 	}
+	if v := row["sla_config"]; v != nil {
+		if m, ok := v.(map[string]any); ok {
+			cfg := map[string]map[string]int64{}
+			for kind, km := range m {
+				if km2, ok := km.(map[string]any); ok {
+					cfg[kind] = map[string]int64{}
+					for p, pv := range km2 {
+						cfg[kind][p] = toInt64(pv)
+					}
+				}
+			}
+			if len(cfg) > 0 {
+				tpl.SLAConfig = cfg
+			}
+		}
+	}
+	return tpl
 }
 
 // templateFieldsFromValue normalises a stored fields value (an ordered
@@ -126,6 +145,58 @@ func templateFieldsToValue(fields []TemplateField) []any {
 	}
 	return out
 }
+
+// slaMinutesFromValueUnit converts a value+unit pair to total minutes.
+func slaMinutesFromValueUnit(value int64, unit string) int64 {
+	if value <= 0 {
+		return 0
+	}
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "weeks":
+		return value * 7 * 24 * 60
+	case "days":
+		return value * 24 * 60
+	case "hours":
+		return value * 60
+	case "minutes":
+		return value
+	default:
+		return value * 60
+	}
+}
+
+// slaMinutesToReadable formats minutes to a readable string.
+func slaMinutesToReadable(m int64) string {
+	if m <= 0 {
+		return ""
+	}
+	if m%10080 == 0 && m != 0 {
+		w := m / 10080
+		if w == 1 {
+			return "1 week"
+		}
+		return fmt.Sprintf("%d weeks", w)
+	}
+	if m%1440 == 0 {
+		d := m / 1440
+		if d == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", d)
+	}
+	if m%60 == 0 {
+		h := m / 60
+		if h == 1 {
+			return "1 h"
+		}
+		return fmt.Sprintf("%d h", h)
+	}
+	if m == 1 {
+		return "1 min"
+	}
+	return fmt.Sprintf("%d min", m)
+}
+
 
 // parseTemplateFieldsFromForm reads the row-editor arrays. Each row emits a
 // hidden index (tpl_field_idx[]) that the required checkbox name is keyed
@@ -359,7 +430,7 @@ func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_, err = h.xoluClient.Create(ctx, issueTemplatesEntity, map[string]any{
+	issueData := map[string]any{
 		"key":         key,
 		"name":        name,
 		"description": description,
@@ -368,7 +439,24 @@ func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) 
 		"is_current":  1,
 		"deleted":     0,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	priorities := []string{"critical", "high", "medium", "low"}
+	cfg := map[string]map[string]int64{
+		"first_response": {},
+		"resolution":      {},
+	}
+	for _, p := range priorities {
+		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_fr_value_"+p)), r.FormValue("sla_fr_unit_"+p)); m > 0 {
+			cfg["first_response"][p] = m
+		}
+		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_res_value_"+p)), r.FormValue("sla_res_unit_"+p)); m > 0 {
+			cfg["resolution"][p] = m
+		}
+	}
+	if len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
+		issueData["sla_config"] = cfg
+	}
+	_, err = h.xoluClient.Create(ctx, issueTemplatesEntity, issueData)
 	if err != nil {
 		h.logger.Error("failed to create issue template", "error", err)
 		renderErr(t("error.create_failed"))
@@ -417,6 +505,7 @@ func (h *UIHandler) IssueTemplateDetail(w http.ResponseWriter, r *http.Request) 
 		AssetTypes:  assetTypes,
 		Assigned:    assignments,
 		CSRFToken:   h.GetCSRFToken(w, r),
+		SLAConfig:   current.SLAConfig,
 	}
 	h.page.Render(w, r, t("issues.templates.detail_title")+": "+current.Name, "/issues", IssueTemplateDetailPage(data, t))
 }
@@ -507,7 +596,7 @@ func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_, err := h.xoluClient.Create(ctx, issueTemplatesEntity, map[string]any{
+	issueData := map[string]any{
 		"key":         key,
 		"name":        name,
 		"description": description,
@@ -516,7 +605,24 @@ func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) 
 		"is_current":  1,
 		"deleted":     0,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	priorities := []string{"critical", "high", "medium", "low"}
+	cfg := map[string]map[string]int64{
+		"first_response": {},
+		"resolution":      {},
+	}
+	for _, p := range priorities {
+		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_fr_value_"+p)), r.FormValue("sla_fr_unit_"+p)); m > 0 {
+			cfg["first_response"][p] = m
+		}
+		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_res_value_"+p)), r.FormValue("sla_res_unit_"+p)); m > 0 {
+			cfg["resolution"][p] = m
+		}
+	}
+	if len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
+		issueData["sla_config"] = cfg
+	}
+	_, err := h.xoluClient.Create(ctx, issueTemplatesEntity, issueData)
 	if err != nil {
 		h.logger.Error("failed to create new issue template version", "error", err)
 		renderErr(t("error.create_failed"))
@@ -740,6 +846,63 @@ func IssueTemplateFormPage(data IssueTemplateFormData, t func(key string, args .
 					),
 					b.Div(append([]interface{}{mi.ID("tpl-fields-list"), mi.Class("space-y-2")}, fieldsChildren...)...),
 				),
+
+				b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6"),
+					b.Div(mi.Class("mb-4"),
+						b.H2(mi.Class("text-lg font-semibold text-gray-900 dark:text-white"), t("issues.templates.sla_section")),
+						b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.templates.sla_hint")),
+					),
+					b.Div(mi.Class("overflow-x-auto"),
+						b.Table(mi.Class("w-full text-sm"),
+							b.Thead(
+								b.Tr(mi.Class("border-b border-gray-200 dark:border-gray-700"),
+									b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-600 dark:text-gray-300"), t("issues.sla.priority")),
+									b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-600 dark:text-gray-300"), t("issues.sla.first_response")),
+									b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-600 dark:text-gray-300"), t("issues.sla.resolution")),
+								),
+							),
+							b.Tbody(
+								func() []interface{} {
+									priorities := []string{"critical", "high", "medium", "low"}
+									rows := []interface{}{}
+									for _, p := range priorities {
+										label := map[string]string{"critical": t("issues.priority.critical"), "high": t("issues.priority.high"), "medium": t("issues.priority.medium"), "low": t("issues.priority.low")}
+										if label[p] == "" || strings.Contains(label[p], ".") {
+											label[p] = p
+										}
+										unitSel := func(name string) mi.Node {
+											return b.Select(mi.Name(name),
+												mi.Class("px-1 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs"),
+												b.Option(mi.Value("hours"), mi.Attr("selected", ""), b.Text(t("issues.templates.unit.hours"))),
+												b.Option(mi.Value("minutes"), b.Text(t("issues.templates.unit.minutes"))),
+												b.Option(mi.Value("days"), b.Text(t("issues.templates.unit.days"))),
+												b.Option(mi.Value("weeks"), b.Text(t("issues.templates.unit.weeks"))),
+											)
+										}
+										rows = append(rows, b.Tr(mi.Class("border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
+											b.Td(mi.Class("px-4 py-2 text-gray-900 dark:text-white font-medium"), label[p]),
+											b.Td(mi.Class("px-4 py-2"),
+												b.Div(mi.Class("flex items-center gap-2"),
+													b.Input(mi.Type("number"), mi.Name("sla_fr_value_"+p), mi.Min("1"), mi.Step("1"),
+														mi.Class("w-16 px-1.5 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs")),
+													unitSel("sla_fr_unit_"+p),
+												),
+											),
+											b.Td(mi.Class("px-4 py-2"),
+												b.Div(mi.Class("flex items-center gap-2"),
+													b.Input(mi.Type("number"), mi.Name("sla_res_value_"+p), mi.Min("1"), mi.Step("1"),
+														mi.Class("w-16 px-1.5 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs")),
+													unitSel("sla_res_unit_"+p),
+												),
+											),
+										))
+									}
+									return rows
+								}()...,
+							),
+						),
+					),
+				),
 				b.Div(mi.Class("flex items-center justify-between pt-2"),
 					b.A(mi.Href("/issue-templates"), mi.Class("px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800"),
 						t("action.cancel"),
@@ -843,6 +1006,7 @@ type IssueTemplateDetailData struct {
 	AssetTypes  []TemplateAssetType
 	Assigned    map[int64]string
 	CSRFToken   string
+	SLAConfig   map[string]map[string]int64
 }
 
 // IssueTemplateDetailPage renders a template's current fields, its version
@@ -925,6 +1089,50 @@ func IssueTemplateDetailPage(data IssueTemplateDetailData, t func(key string, ar
 				}
 				return b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), data.Description)
 			}(),
+			b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"),
+				b.H2(mi.Class("text-lg font-semibold text-gray-900 dark:text-white px-4 py-3 border-b border-gray-100 dark:border-gray-700"), t("issues.sla.title")),
+				b.Div(
+					func() []interface{} {
+						priorities := []string{"critical", "high", "medium", "low"}
+						rows := []interface{}{}
+						for _, p := range priorities {
+							label := map[string]string{"critical": t("issues.priority.critical"), "high": t("issues.priority.high"), "medium": t("issues.priority.medium"), "low": t("issues.priority.low")}
+							if label[p] == "" || strings.Contains(label[p], ".") {
+								label[p] = p
+							}
+							fr := int64(0)
+							rs := int64(0)
+							if data.SLAConfig != nil {
+								if m, ok := data.SLAConfig["first_response"]; ok {
+									fr = m[p]
+								}
+								if m, ok := data.SLAConfig["resolution"]; ok {
+									rs = m[p]
+								}
+							}
+							frs := t("issues.templates.sla_use_defaults")
+							if fr > 0 {
+								frs = slaMinutesToReadable(fr)
+							}
+							rss := t("issues.templates.sla_use_defaults")
+							if rs > 0 {
+								rss = slaMinutesToReadable(rs)
+							}
+							rows = append(rows, b.Div(mi.Class("px-4 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0 flex items-center justify-between text-sm"),
+								b.Div(mi.Class("text-gray-900 dark:text-white font-medium"), label[p]),
+								b.Div(mi.Class("flex items-center gap-4 text-gray-600 dark:text-gray-300"),
+									b.Span(t("issues.sla.first_response")+": "+frs),
+									b.Span(t("issues.sla.resolution")+": "+rss),
+								),
+							))
+						}
+						if len(rows) == 0 {
+							rows = append(rows, b.P(mi.Class("px-4 py-2 text-sm text-gray-500"), t("issues.templates.sla_use_defaults")))
+						}
+						return rows
+					}()...,
+				),
+			),
 			b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"),
 				b.H2(mi.Class("text-lg font-semibold text-gray-900 dark:text-white px-4 py-3 border-b border-gray-100 dark:border-gray-700"), t("issues.templates.fields")),
 				b.Div(fieldRows...),

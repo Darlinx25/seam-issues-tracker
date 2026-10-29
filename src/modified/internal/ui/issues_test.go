@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	mi "github.com/ha1tch/minty"
 	"github.com/ha1tch/seam-ui/internal/auth"
@@ -1226,6 +1227,37 @@ func TestAssetCategoryFromCriticality(t *testing.T) {
 	}
 }
 
+func TestCalculateSLADeadline(t *testing.T) {
+	base := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	if got := calculateSLADeadline("critical", "critico", base); got != "2026-10-28T16:00:00Z" {
+		t.Errorf("critico/critical = %q", got)
+	}
+	if got := calculateSLADeadline("high", "critico", base); got != "2026-10-29T12:00:00Z" {
+		t.Errorf("critico/high = %q", got)
+	}
+	if got := calculateSLADeadline("medium", "critico", base); got != "2026-10-30T12:00:00Z" {
+		t.Errorf("critico/medium = %q", got)
+	}
+	if got := calculateSLADeadline("low", "critico", base); got != "2026-10-30T12:00:00Z" {
+		t.Errorf("critico/low = %q", got)
+	}
+	if got := calculateSLADeadline("critical", "normal", base); got != "2026-10-29T12:00:00Z" {
+		t.Errorf("normal/critical = %q", got)
+	}
+	if got := calculateSLADeadline("high", "normal", base); got != "2026-10-30T12:00:00Z" {
+		t.Errorf("normal/high = %q", got)
+	}
+	if got := calculateSLADeadline("medium", "normal", base); got != "2026-11-04T12:00:00Z" {
+		t.Errorf("normal/medium = %q", got)
+	}
+	if got := calculateSLADeadline("low", "normal", base); got != "2026-11-04T12:00:00Z" {
+		t.Errorf("normal/low = %q", got)
+	}
+	if got := calculateSLADeadline("unknown", "unknown", base); got != "2026-10-30T12:00:00Z" {
+		t.Errorf("default = %q", got)
+	}
+}
+
 func TestIssueCreate_WithAsset_SetsAssetCategoryCritical(t *testing.T) {
 	var created map[string]any
 	server := mockOLU(t, map[string]http.HandlerFunc{
@@ -1257,6 +1289,7 @@ func TestIssueCreate_WithAsset_SetsAssetCategoryCritical(t *testing.T) {
 	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
 		"title":    {"Pump making noise"},
 		"asset_id": {"7"},
+		"priority": {"critical"},
 	})
 	assertRedirectsTo(t, rec, "/issues/1")
 	if created == nil {
@@ -1264,6 +1297,12 @@ func TestIssueCreate_WithAsset_SetsAssetCategoryCritical(t *testing.T) {
 	}
 	if created["asset_category"] != "critico" {
 		t.Errorf("expected asset_category=critico for a critical asset, got %v", created["asset_category"])
+	}
+	if _, ok := created["sla_first_response_deadline"]; !ok {
+		t.Error("expected sla_first_response_deadline to be set on issue creation")
+	}
+	if _, ok := created["sla_resolution_deadline"]; !ok {
+		t.Error("expected sla_resolution_deadline to be set on issue creation")
 	}
 }
 
@@ -1288,13 +1327,19 @@ func TestIssueCreate_WithoutAsset_DefaultsCategoryNormal(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No asset here"}})
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No asset here"}, "priority": {"high"}})
 	assertRedirectsTo(t, rec, "/issues/1")
 	if created == nil {
 		t.Fatal("xolu.Create for issues was never called")
 	}
 	if created["asset_category"] != "normal" {
 		t.Errorf("expected asset_category=normal when no asset is linked, got %v", created["asset_category"])
+	}
+	if _, ok := created["sla_first_response_deadline"]; !ok {
+		t.Error("expected sla_first_response_deadline to be set on issue creation")
+	}
+	if _, ok := created["sla_resolution_deadline"]; !ok {
+		t.Error("expected sla_resolution_deadline to be set on issue creation")
 	}
 }
 
