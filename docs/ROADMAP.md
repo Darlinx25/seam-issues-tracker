@@ -10,9 +10,11 @@ Principio acordado por el equipo: primero un flujo funcional básico y
 completo en el canal principal de la app; después se abren los otros
 canales; al final llega el pulido y las funcionalidades nuevas.
 
-La Iteración 1 se compone de 13 tarjetas, una por persona por semana,
+La Iteración 1 se compone de 12 tarjetas, una por persona por semana,
 para que el equipo de cuatro pueda tomarlas de a una, implementarlas de
-forma individual y avanzar sin pisarse.
+forma individual y avanzar sin pisarse. La Iteración 2 se compone de 11
+tarjetas y agrega los issues maestros, el canal QR completo, filtros
+avanzados y mejoras de UI.
 
 ## 2. Entorno y arranque
 
@@ -155,44 +157,19 @@ los 4 idiomas. Depende de la tarjeta de FSM.
 Acción Rechazar para cualquier estado no terminal. Formulario con
 textarea de motivo validado obligatorio en cliente y servidor. La
 transición `reject` se dispara con el motivo como input y queda visible
-en el detalle. Rechazar es una acción del ciclo de vida de la
-incidencia, así que la puede ejecutar el responsable de la incidencia o
-un administrador, no cualquier usuario. i18n del formulario y del estado
-`rejected` en los 4 idiomas. Tests de la transición, de motivo vacío y
-del rechazo por rol. Depende de la tarjeta de FSM.
+en el detalle. i18n del formulario y del estado `rejected` en los 4
+idiomas. Tests de la transición y de motivo vacío. Depende de la
+tarjeta de FSM.
 
 ### Asignar responsable a una incidencia
 
 Acción de asignar responsable en el detalle con un selector searchable
 sobre la entidad `users`, guardado en `assignee`. Al asignar sobre una
 incidencia `reported`, disparar `triage` para pasar a `triaged`; desde
-`triaged` se habilita pasar a `in_progress` con el botón Iniciar, que se
-ofrece tanto en `reported` como en `triaged`. El creador queda como
-responsable por defecto. Mostrar el responsable en listado y detalle; en
-el listado los nombres de los responsables se resuelven con una sola
-consulta, no una por fila.
-
-Asignar es una acción administrativa: solo la ejecutan los
-administradores (admin y developer, que lo supera), y a los demás roles
-no se les muestra el botón. El permiso se comprueba en el servidor, en
-la página de asignar y en su POST, no solo ocultando el botón.
-
-Una vez iniciada la incidencia el responsable queda congelado: no se
-puede cambiar ni desde la UI ni por POST, y la acción Asignar desaparece
-del detalle. Las incidencias terminales mantienen su mensaje propio.
-i18n de los mensajes en los 4 idiomas y tests de asignación,
-reasignación, congelado y rechazo por rol. Depende de la tarjeta de
+`triaged` se habilita pasar a `in_progress`. El creador queda como
+responsable por defecto. Mostrar el responsable en listado y detalle.
+i18n y tests de asignación y reasignación. Depende de la tarjeta de
 FSM.
-
-El responsable es además el dueño de las acciones del ciclo de vida
-(Iniciar, Resolver, Cerrar y Rechazar): un tercero al que la incidencia
-no se le asignó no puede ejecutarlas, ni desde la UI (no se le ofrecen
-los botones) ni por POST (403 en el servidor). Los administradores
-conservan esas acciones aunque la incidencia tenga otro responsable, para
-que una incidencia cuyo responsable no actúa no quede trabada. Las
-incidencias sin responsable --las anteriores a esta regla-- siguen
-pudiendo ser actuadas por cualquiera con acceso. Tests de la propiedad
-de las acciones por rol y por identidad del responsable.
 
 ### Filtrar el listado de incidencias por estado
 
@@ -215,13 +192,6 @@ Agregar `sla_deadline` y `asset_category` a la entidad y al struct
 críticos 4h, 24h y 48h y normales 24h, 48h y 7 días según la prioridad.
 Cálculo como función pura con tabla de casos y tests. La tabla queda
 fija en código. Depende de la tarjeta de categoría.
-
-### Mostrar el SLA y su vigencia en listado y detalle
-
-Mostrar `sla_deadline` en formato legible y un badge de vigencia
-calculado contra `time.Now()`, en listado y detalle. Sin badge para los
-terminales closed, rejected y duplicate. i18n de los estados del SLA en
-los 4 idiomas. Depende de la tarjeta de cálculo del SLA.
 
 ### Registrar y mostrar el historial de acciones de la incidencia
 
@@ -263,7 +233,121 @@ validar el flujo en la app con `XOLU_API_V2_ENABLED=true`: crear →
 triar → start → resolver → cerrar, y crear → rechazar. Depende de todas
 las demás tarjetas.
 
-## 7. Cómo trabaja el equipo
+## 7. Iteración 2 — Tarjetas
+
+### Agrupar incidencias en un Issue Madre
+
+Un Caso o Issue Master agrupa varios issues que refieren al mismo
+problema, por ejemplo cuando varias personas reportan la misma falla sin
+saberlo. Desde el panel administrativo el operador selecciona varios
+issues y los agrupa bajo un Caso único; la gestión se centraliza en el
+Issue Master y cualquier cambio de estado o respuesta se propaga
+automáticamente a todos los issues hijos. Agregar `master_id` a la
+entidad issues para vincular los hijos. Solo se pueden agrupar issues
+del mismo activo y en el mismo estado. Una vez agrupados, los hijos
+quedan bloqueados y no se gestionan individualmente. Se debe poder
+desvincular un issue del Caso, que desde ese momento recupera su
+gestión individual. i18n en los 4 idiomas y tests de agrupación,
+propagación de estado, bloqueo, condiciones y desvinculación. Depende de
+las tarjetas de FSM, detalle y acciones.
+
+### Mostrar el SLA y su vigencia en listado y detalle
+
+Mostrar `sla_deadline` en formato legible y un badge de vigencia
+calculado contra `time.Now()`, en listado y detalle. Sin badge para los
+terminales closed, rejected y duplicate. i18n de los estados del SLA en
+los 4 idiomas. Depende de la tarjeta de cálculo del SLA.
+
+### Generar y gestionar códigos QR por activo
+
+Crear la entidad `issue_qr_codes` con `code` único e irrepetible,
+`asset_id`, `asset_category` copiada al generar con el mismo helper de
+mapeo criticality → critico/normal, `active`, `created_at`,
+`created_by` y `revoked_at`. Desde el detalle del activo exponer Generar
+código QR y permitir ver el link `/s/{code}`, copiarlo, regenerar con
+confirmación y revocar con confirmación. No generar un nuevo código
+activo si ya existe uno para ese activo: en su lugar ofrecer la
+regeneración. Accesible solo para usuarios con permisos para gestionar
+activos o incidencias. i18n en los 4 idiomas y tests de generación,
+unicidad, copia de `asset_category`, revocación y permisos. Depende de
+la tarjeta de categoría.
+
+### Listar y administrar los códigos QR
+
+Nuevo apartado para administrar todos los códigos QR generados. Listado
+con columnas Activo, Código, Estado (activo/revocado), Creado por y
+Fecha. Filtros por activo y por estado y búsqueda por nombre de activo.
+Permitir revocar desde el listado con confirmación, de forma individual
+y masiva. Restringido únicamente a administradores. i18n en los 4
+idiomas y tests de listado, filtros y revocación individual y masiva.
+Depende de la tarjeta de generación de códigos QR.
+
+### Crear la landing pública del código QR
+
+Ruta pública `GET /s/{code}` sin `requireAuth`. Buscar el código en
+`issue_qr_codes`. Si no existe, está revocado o inactivo, mostrar una
+página de error genérica sin revelar el motivo ni permitir enumeración.
+Si es válido y está activo, cargar el activo asociado y mostrar nombre,
+tipo, ubicación y `asset_category` embebida en el código, con el CTA
+Reportar incidencia. Nunca loggear el código completo. i18n en los 4
+idiomas y tests de código válido, inválido, revocado, inactivo, con
+activo existente y con activo borrado. Depende de la tarjeta de
+generación de códigos QR.
+
+### Formulario anónimo de incidencia desde QR
+
+Ruta pública `POST /s/{code}/report` sin autenticación. Forzar
+`channel = qr` y `reported_by = null`, sin auto-asignar al creador, a
+diferencia del reporte desde la app.
+
+El contacto es obligatorio: agregar `contact_name` y `contact_method`
+con validación de formato, obligatorios y validados en cliente y
+servidor, persistidos en `form_data`.
+
+La creación toma `asset_id` y `asset_category` directamente del registro
+del código QR, nunca recalculándolos desde el activo. Aplicar las
+plantillas asignadas al tipo de activo si existen, con el mismo
+comportamiento que desde la app. Reutilizar la creación de la machine en
+xolu, `form_data` y las validaciones existentes. Calcular `sla_deadline`
+con la misma tabla fija usando priority, severity y `asset_category`.
+Crear la incidencia en `reported` y sin `assignee`. Tras crearla mostrar
+una confirmación genérica sin exponer id, datos internos ni PII. i18n
+del formulario, validaciones, errores y confirmación en los 4 idiomas.
+Tests de creación exitosa con canal qr, sin `reported_by` ni `assignee` y
+con SLA calculado, contacto vacío o inválido, código revocado o
+inválido, con y sin plantilla asignada y con activo borrado. Depende de
+las tarjetas de landing pública, categoría, SLA, FSM y plantillas
+versionadas.
+
+### Visibilidad, asignación y trazabilidad del canal QR
+
+Ajustes al listado y al detalle para dejar clara la procedencia. Mostrar
+un badge QR en listado y detalle cuando `channel = qr`. Si `reported_by`
+es nulo, mostrar Reportado por: Anónimo vía `t()`. Las incidencias QR
+sin `assignee` deben seguir siendo asignables por administradores con
+las mismas reglas de la tarjeta de asignación, manteniendo el congelado
+y el gate de `canActOnIssue` sin alterar esa lógica. Asegurar
+compatibilidad con el filtro por estado y la búsqueda por texto. i18n en
+los 4 idiomas y tests de badge, anónimo, visibilidad en listado y
+detalle y asignación por admin sobre una incidencia QR sin assignee.
+Depende de las tarjetas de formulario QR, asignación, filtro por estado
+y búsqueda.
+
+### Ampliar los filtros del listado de incidencias
+
+Ampliar los filtros del listado para combinar responsable, reportante,
+activo y otros campos, además del estado y la búsqueda existentes, con
+variedad de filtros y pantallas. i18n en los 4 idiomas y tests de los
+filtros y sus combinaciones. Depende de las tarjetas de filtro por
+estado, búsqueda y asignación.
+
+### Agregar opción para subir fotos en las plantillas
+
+### Mejoras visuales de la UI
+
+### Notificar el cambio de estado de forma multimodal
+
+## 8. Cómo trabaja el equipo
 
 Cada integrante toma una tarjeta, la implementa solo en el shadow repo
 y la valida contra la definición de terminada de la sección 3. Al
@@ -274,18 +358,3 @@ tarjetas con dependencias se toman después de las que las desbloquean:
 la de FSM y la de categoría son las primeras; las de detalle y acciones
 arrancan apenas esté la FSM; SLA, filtros y búsqueda van en paralelo; la
 de tests es la última y cierra la iteración.
-
-## 8. Roadmap posterior
-
-La iteración 2 abre el canal QR público: generación de códigos por
-activo con la categoría embebida, la landing pública existente en
-`/s/{code}` y el formulario anónimo con contacto obligatorio. La
-iteración 3 suma el canal API para sistemas externos y agentes de IA.
-
-Después llega el pulido y las funcionalidades nuevas: plantillas
-dinámicas versionadas con editor de administración en alta y uso,
-motor de reglas IF/THEN sobre el contexto de entrada, completar el
-historial con triaged extendido y fusión de duplicados, panel de
-control, edición y borrado de configuraciones con validaciones,
-contrato operativo de la API para MCP y la integración con Workorders
-para lanzar y vincular órdenes de trabajo desde la incidencia.
