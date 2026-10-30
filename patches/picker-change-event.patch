@@ -1,0 +1,28 @@
+--- a/web/static/js/app.js
++++ b/web/static/js/app.js
+@@ -1824,6 +1824,10 @@
+             hidden.value = sel.id;
+             setLabel(sel.label);
+             showIcon(sel.id);
++            // Writing .value from script fires no event: tell listeners (e.g. the
++            // issue form's template loader, hx-trigger "change from:#field-asset_id")
++            // that the selection changed.
++            hidden.dispatchEvent(new Event('change', { bubbles: true }));
+           }
+         }
+       }
+@@ -1832,7 +1836,13 @@
+     if (openOnFocus) search.addEventListener('focus', function () { if (!search.value) ac.start(); });
+ 
+     // A stale hidden id must not survive the user typing something new.
+-    search.addEventListener('input', function () { if (!suppress) { hidden.value = ''; showIcon(''); } });
++    search.addEventListener('input', function () {
++      if (suppress) return;
++      var had = hidden.value !== '';
++      hidden.value = '';
++      showIcon('');
++      if (had) hidden.dispatchEvent(new Event('change', { bubbles: true }));
++    });
+   }
+ 
+   function init(scope) {

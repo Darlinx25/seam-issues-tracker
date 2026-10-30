@@ -197,6 +197,51 @@ func slaMinutesToReadable(m int64) string {
 	return fmt.Sprintf("%d min", m)
 }
 
+// slaMinutesToValueUnit is the inverse of slaMinutesFromValueUnit: it picks
+// the largest unit that divides the minutes exactly, so a stored 1440 comes
+// back to the form as "1 day" rather than "1440 minutes". Zero (nothing
+// stored) yields an empty value with the default unit.
+func slaMinutesToValueUnit(m int64) (int64, string) {
+	switch {
+	case m <= 0:
+		return 0, "hours"
+	case m%10080 == 0:
+		return m / 10080, "weeks"
+	case m%1440 == 0:
+		return m / 1440, "days"
+	case m%60 == 0:
+		return m / 60, "hours"
+	default:
+		return m, "minutes"
+	}
+}
+
+// slaPriorities are the priorities the template's SLA table has a row for.
+var slaPriorities = []string{"critical", "high", "medium", "low"}
+
+// parseSLAConfigFromForm reads the SLA-per-priority table of the template
+// form into {"first_response": {priority: minutes}, "resolution": {...}}.
+// Rows left blank are omitted, so an issue of that priority falls back to
+// the SLA defaults. The posted values are strings, which toInt64 does not
+// parse (it only converts numeric types and returns 0 for anything else),
+// hence toInt64FromString.
+func parseSLAConfigFromForm(r *http.Request) map[string]map[string]int64 {
+	cfg := map[string]map[string]int64{
+		"first_response": {},
+		"resolution":     {},
+	}
+	for _, p := range slaPriorities {
+		fr := toInt64FromString(strings.TrimSpace(r.FormValue("sla_fr_value_" + p)))
+		if m := slaMinutesFromValueUnit(fr, r.FormValue("sla_fr_unit_"+p)); m > 0 {
+			cfg["first_response"][p] = m
+		}
+		res := toInt64FromString(strings.TrimSpace(r.FormValue("sla_res_value_" + p)))
+		if m := slaMinutesFromValueUnit(res, r.FormValue("sla_res_unit_"+p)); m > 0 {
+			cfg["resolution"][p] = m
+		}
+	}
+	return cfg
+}
 
 // parseTemplateFieldsFromForm reads the row-editor arrays. Each row emits a
 // hidden index (tpl_field_idx[]) that the required checkbox name is keyed
@@ -410,6 +455,7 @@ func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) 
 			Fields:      fields,
 			FieldTypes:  templateFieldTypes(),
 			Error:       msg,
+			SLAConfig:   parseSLAConfigFromForm(r),
 		}
 		_ = h.page.Render(w, r, t("issues.templates.new"), "/issues", IssueTemplateFormPage(data, t))
 	}
@@ -440,20 +486,7 @@ func (h *UIHandler) IssueTemplateCreate(w http.ResponseWriter, r *http.Request) 
 		"deleted":     0,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
 	}
-	priorities := []string{"critical", "high", "medium", "low"}
-	cfg := map[string]map[string]int64{
-		"first_response": {},
-		"resolution":      {},
-	}
-	for _, p := range priorities {
-		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_fr_value_"+p)), r.FormValue("sla_fr_unit_"+p)); m > 0 {
-			cfg["first_response"][p] = m
-		}
-		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_res_value_"+p)), r.FormValue("sla_res_unit_"+p)); m > 0 {
-			cfg["resolution"][p] = m
-		}
-	}
-	if len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
+	if cfg := parseSLAConfigFromForm(r); len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
 		issueData["sla_config"] = cfg
 	}
 	_, err = h.xoluClient.Create(ctx, issueTemplatesEntity, issueData)
@@ -555,6 +588,7 @@ func (h *UIHandler) IssueTemplateEdit(w http.ResponseWriter, r *http.Request) {
 		Fields:      current.Fields,
 		FieldTypes:  templateFieldTypes(),
 		CSRFToken:   h.GetCSRFToken(w, r),
+		SLAConfig:   current.SLAConfig,
 	}
 	h.page.Render(w, r, t("issues.templates.edit_title")+": "+current.Name, "/issues", IssueTemplateFormPage(data, t))
 }
@@ -581,6 +615,7 @@ func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) 
 			FieldTypes:  templateFieldTypes(),
 			CSRFToken:   csrfToken,
 			Error:       msg,
+			SLAConfig:   parseSLAConfigFromForm(r),
 		}
 		_ = h.page.Render(w, r, t("issues.templates.edit_title"), "/issues", IssueTemplateFormPage(data, t))
 	}
@@ -606,20 +641,7 @@ func (h *UIHandler) IssueTemplateUpdate(w http.ResponseWriter, r *http.Request) 
 		"deleted":     0,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
 	}
-	priorities := []string{"critical", "high", "medium", "low"}
-	cfg := map[string]map[string]int64{
-		"first_response": {},
-		"resolution":      {},
-	}
-	for _, p := range priorities {
-		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_fr_value_"+p)), r.FormValue("sla_fr_unit_"+p)); m > 0 {
-			cfg["first_response"][p] = m
-		}
-		if m := slaMinutesFromValueUnit(toInt64(r.FormValue("sla_res_value_"+p)), r.FormValue("sla_res_unit_"+p)); m > 0 {
-			cfg["resolution"][p] = m
-		}
-	}
-	if len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
+	if cfg := parseSLAConfigFromForm(r); len(cfg["first_response"]) > 0 || len(cfg["resolution"]) > 0 {
 		issueData["sla_config"] = cfg
 	}
 	_, err := h.xoluClient.Create(ctx, issueTemplatesEntity, issueData)
@@ -772,6 +794,10 @@ type IssueTemplateFormData struct {
 	FieldTypes  []string
 	CSRFToken   string
 	Error       string
+
+	// SLAConfig preloads the SLA-per-priority table: the stored version's
+	// values on edit, the submitted ones when re-rendering after an error.
+	SLAConfig map[string]map[string]int64
 }
 
 // IssueTemplateFormPage renders the template create/edit form with the same
@@ -863,38 +889,43 @@ func IssueTemplateFormPage(data IssueTemplateFormData, t func(key string, args .
 							),
 							b.Tbody(
 								func() []interface{} {
-									priorities := []string{"critical", "high", "medium", "low"}
 									rows := []interface{}{}
-									for _, p := range priorities {
+									// slaCell is one value+unit pair, preloaded from the stored minutes
+									// (blank, in hours, when nothing is stored).
+									slaCell := func(valueName, unitName string, minutes int64) mi.Node {
+										val, curUnit := slaMinutesToValueUnit(minutes)
+										inputAttrs := []mi.Attribute{
+											mi.Type("number"), mi.Name(valueName), mi.Min("1"), mi.Step("1"),
+											mi.Class("w-16 px-1.5 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs"),
+										}
+										if val > 0 {
+											inputAttrs = append(inputAttrs, mi.Value(strconv.FormatInt(val, 10)))
+										}
+										selAttrs := []interface{}{
+											mi.Name(unitName),
+											mi.Class("px-1 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs"),
+										}
+										for _, u := range []string{"hours", "minutes", "days", "weeks"} {
+											if u == curUnit {
+												selAttrs = append(selAttrs, b.Option(mi.Value(u), mi.Attr("selected", ""), b.Text(t("issues.templates.unit."+u))))
+											} else {
+												selAttrs = append(selAttrs, b.Option(mi.Value(u), b.Text(t("issues.templates.unit."+u))))
+											}
+										}
+										return b.Div(mi.Class("flex items-center gap-2"),
+											b.Input(inputAttrs...),
+											b.Select(selAttrs...),
+										)
+									}
+									for _, p := range slaPriorities {
 										label := map[string]string{"critical": t("issues.priority.critical"), "high": t("issues.priority.high"), "medium": t("issues.priority.medium"), "low": t("issues.priority.low")}
 										if label[p] == "" || strings.Contains(label[p], ".") {
 											label[p] = p
 										}
-										unitSel := func(name string) mi.Node {
-											return b.Select(mi.Name(name),
-												mi.Class("px-1 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs"),
-												b.Option(mi.Value("hours"), mi.Attr("selected", ""), b.Text(t("issues.templates.unit.hours"))),
-												b.Option(mi.Value("minutes"), b.Text(t("issues.templates.unit.minutes"))),
-												b.Option(mi.Value("days"), b.Text(t("issues.templates.unit.days"))),
-												b.Option(mi.Value("weeks"), b.Text(t("issues.templates.unit.weeks"))),
-											)
-										}
 										rows = append(rows, b.Tr(mi.Class("border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
 											b.Td(mi.Class("px-4 py-2 text-gray-900 dark:text-white font-medium"), label[p]),
-											b.Td(mi.Class("px-4 py-2"),
-												b.Div(mi.Class("flex items-center gap-2"),
-													b.Input(mi.Type("number"), mi.Name("sla_fr_value_"+p), mi.Min("1"), mi.Step("1"),
-														mi.Class("w-16 px-1.5 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs")),
-													unitSel("sla_fr_unit_"+p),
-												),
-											),
-											b.Td(mi.Class("px-4 py-2"),
-												b.Div(mi.Class("flex items-center gap-2"),
-													b.Input(mi.Type("number"), mi.Name("sla_res_value_"+p), mi.Min("1"), mi.Step("1"),
-														mi.Class("w-16 px-1.5 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs")),
-													unitSel("sla_res_unit_"+p),
-												),
-											),
+											b.Td(mi.Class("px-4 py-2"), slaCell("sla_fr_value_"+p, "sla_fr_unit_"+p, data.SLAConfig["first_response"][p])),
+											b.Td(mi.Class("px-4 py-2"), slaCell("sla_res_value_"+p, "sla_res_unit_"+p, data.SLAConfig["resolution"][p])),
 										))
 									}
 									return rows

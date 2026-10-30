@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -661,6 +662,302 @@ func TestIssueTemplateUpdate_CreatesNewVersion(t *testing.T) {
 	}
 	if patched["is_current"] != 0.0 {
 		t.Errorf("expected previous version demoted (is_current=0), got %v", patched["is_current"])
+	}
+}
+
+// TestSLAMinutesToValueUnit confirms the stored minutes are shown back in the
+// largest exact unit, and that value+unit round-trips through
+// slaMinutesFromValueUnit -- so what the form preloads on edit saves back as
+// the same number of minutes.
+func TestSLAMinutesToValueUnit(t *testing.T) {
+	cases := []struct {
+		minutes int64
+		value   int64
+		unit    string
+	}{
+		{0, 0, "hours"},
+		{-5, 0, "hours"},
+		{37, 37, "minutes"},
+		{90, 90, "minutes"},
+		{60, 1, "hours"},
+		{240, 4, "hours"},
+		{1440, 1, "days"},
+		{4320, 3, "days"},
+		{10080, 1, "weeks"},
+		{20160, 2, "weeks"},
+	}
+	for _, c := range cases {
+		v, u := slaMinutesToValueUnit(c.minutes)
+		if v != c.value || u != c.unit {
+			t.Errorf("slaMinutesToValueUnit(%d) = (%d, %q), want (%d, %q)", c.minutes, v, u, c.value, c.unit)
+		}
+		if c.minutes > 0 {
+			if back := slaMinutesFromValueUnit(v, u); back != c.minutes {
+				t.Errorf("round trip of %d minutes came back as %d", c.minutes, back)
+			}
+		}
+	}
+}
+
+// TestParseSLAConfigFromForm confirms the SLA table is read from the posted
+// strings. The values arrive as text, which toInt64 silently turned into 0
+// (so no SLA was ever saved); blank, zero and non-numeric rows are omitted.
+func TestParseSLAConfigFromForm(t *testing.T) {
+	form := url.Values{
+		"sla_res_value_critical": {"4"},
+		"sla_res_unit_critical":  {"hours"},
+		"sla_res_value_high":     {" 2 "},
+		"sla_res_unit_high":      {"days"},
+		"sla_fr_value_critical":  {"30"},
+		"sla_fr_unit_critical":   {"minutes"},
+		"sla_fr_value_medium":    {"1"},
+		"sla_fr_unit_medium":     {"weeks"},
+		"sla_res_value_medium":   {""},
+		"sla_res_value_low":      {"0"},
+		"sla_fr_value_low":       {"abc"},
+	}
+	req := httptest.NewRequest("POST", "/issue-templates", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	cfg := parseSLAConfigFromForm(req)
+
+	wantRes := map[string]int64{"critical": 240, "high": 2880}
+	wantFR := map[string]int64{"critical": 30, "medium": 10080}
+	if len(cfg["resolution"]) != len(wantRes) {
+		t.Errorf("resolution = %v, want %v", cfg["resolution"], wantRes)
+	}
+	for p, m := range wantRes {
+		if cfg["resolution"][p] != m {
+			t.Errorf("resolution[%s] = %d, want %d", p, cfg["resolution"][p], m)
+		}
+	}
+	if len(cfg["first_response"]) != len(wantFR) {
+		t.Errorf("first_response = %v, want %v", cfg["first_response"], wantFR)
+	}
+	for p, m := range wantFR {
+		if cfg["first_response"][p] != m {
+			t.Errorf("first_response[%s] = %d, want %d", p, cfg["first_response"][p], m)
+		}
+	}
+}
+
+// TestIssueTemplateCreate_StoresSLAConfig confirms the SLA typed on the new
+// template form reaches xolu as sla_config (minutes), and that a template
+// with no SLA stored leaves the key out so the defaults apply.
+func TestIssueTemplateCreate_StoresSLAConfig(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any { return nil })
+		},
+		"POST /api/v1/issue_templates": func(w http.ResponseWriter, r *http.Request) {
+			created = nil
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueTemplateCreate, "/issue-templates", url.Values{
+		"name":                   {"Pump Failure"},
+		"sla_res_value_critical": {"4"},
+		"sla_res_unit_critical":  {"hours"},
+		"sla_fr_value_critical":  {"30"},
+		"sla_fr_unit_critical":   {"minutes"},
+	})
+	assertRedirectsTo(t, rec, "/issue-templates")
+	cfg, ok := created["sla_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sla_config on the stored template, got %v", created["sla_config"])
+	}
+	if res, _ := cfg["resolution"].(map[string]any); res["critical"] != 240.0 {
+		t.Errorf("expected resolution.critical=240 minutes, got %v", cfg["resolution"])
+	}
+	if fr, _ := cfg["first_response"].(map[string]any); fr["critical"] != 30.0 {
+		t.Errorf("expected first_response.critical=30 minutes, got %v", cfg["first_response"])
+	}
+
+	rec = postForm(t, h.IssueTemplateCreate, "/issue-templates", url.Values{"name": {"Plain"}})
+	assertRedirectsTo(t, rec, "/issue-templates")
+	if _, has := created["sla_config"]; has {
+		t.Errorf("expected no sla_config when no SLA was typed, got %v", created["sla_config"])
+	}
+}
+
+// TestIssueTemplateUpdate_StoresSLAConfig confirms the SLA typed on the edit
+// form is written on the new version.
+func TestIssueTemplateUpdate_StoresSLAConfig(t *testing.T) {
+	var created map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "FROM issue_templates") {
+					return []map[string]any{pumpFailureTemplateRow()}
+				}
+				return nil
+			})
+		},
+		"POST /api/v1/issue_templates": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(11)})
+		},
+		"PATCH /api/v1/issue_templates/5": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(5)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{
+		"name":                  {"Pump Failure"},
+		"sla_res_value_high":    {"2"},
+		"sla_res_unit_high":     {"days"},
+		"sla_fr_value_critical": {"15"},
+		"sla_fr_unit_critical":  {"minutes"},
+	}
+	req := httptest.NewRequest("POST", "/issue-templates/pump_failure/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("key", "pump_failure")
+	rec := httptest.NewRecorder()
+	h.IssueTemplateUpdate(rec, req)
+
+	assertRedirectsTo(t, rec, "/issue-templates/pump_failure")
+	cfg, ok := created["sla_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sla_config on the new version, got %v", created["sla_config"])
+	}
+	if res, _ := cfg["resolution"].(map[string]any); res["high"] != 2880.0 {
+		t.Errorf("expected resolution.high=2880 minutes, got %v", cfg["resolution"])
+	}
+	if fr, _ := cfg["first_response"].(map[string]any); fr["critical"] != 15.0 {
+		t.Errorf("expected first_response.critical=15 minutes, got %v", cfg["first_response"])
+	}
+}
+
+// TestIssueTemplateEdit_PreloadsSLA confirms the edit form is filled with the
+// stored SLA (value and unit). Left empty, saving any edit wrote a new
+// version with no SLA, silently dropping the one already configured.
+func TestIssueTemplateEdit_PreloadsSLA(t *testing.T) {
+	row := pumpFailureTemplateRow()
+	row["sla_config"] = map[string]any{
+		"resolution":     map[string]any{"critical": float64(240), "high": float64(2880)},
+		"first_response": map[string]any{"critical": float64(37)},
+	}
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "FROM issue_templates") {
+					return []map[string]any{row}
+				}
+				return nil
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issue-templates/pump_failure/edit", nil)
+	req.SetPathValue("key", "pump_failure")
+	rec := httptest.NewRecorder()
+	h.IssueTemplateEdit(rec, req)
+	body := rec.Body.String()
+
+	// Look at the whole <input>/<select> element, so the check does not
+	// depend on the order the builder writes its attributes in.
+	input := func(name, value string) bool {
+		el := regexp.MustCompile(`<input[^>]*name="` + name + `"[^>]*>`).FindString(body)
+		return strings.Contains(el, `value="`+value+`"`)
+	}
+	selected := func(name, unit string) bool {
+		sel := regexp.MustCompile(`(?s)<select[^>]*name="` + name + `".*?</select>`).FindString(body)
+		opt := regexp.MustCompile(`<option[^>]*(selected="[^"]*"[^>]*value="` + unit + `"|value="` + unit + `"[^>]*selected)`)
+		return opt.MatchString(sel)
+	}
+	if !input("sla_res_value_critical", "4") || !selected("sla_res_unit_critical", "hours") {
+		t.Errorf("expected resolution/critical preloaded as 4 hours, got: %s", body)
+	}
+	if !input("sla_res_value_high", "2") || !selected("sla_res_unit_high", "days") {
+		t.Errorf("expected resolution/high preloaded as 2 days, got: %s", body)
+	}
+	if !input("sla_fr_value_critical", "37") || !selected("sla_fr_unit_critical", "minutes") {
+		t.Errorf("expected first_response/critical preloaded as 37 minutes, got: %s", body)
+	}
+}
+
+// TestIssueCreate_UsesTemplateSLA confirms the SLA configured on the asset
+// type's template is what stamps the issue's deadline (here 90 minutes for a
+// critical issue, instead of the 4 hours the defaults would give).
+func TestIssueCreate_UsesTemplateSLA(t *testing.T) {
+	var created map[string]any
+	tplRow := pumpFailureTemplateRow()
+	tplRow["sla_config"] = map[string]any{
+		"resolution":     map[string]any{"critical": float64(90)},
+		"first_response": map[string]any{"critical": float64(10)},
+	}
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/assets/7": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(7), "name": "Pump 1", "type_id": float64(3), "criticality": "Alta"})
+		},
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				switch {
+				case strings.Contains(q, "issue_template_assignments"):
+					return []map[string]any{{"template_key": "pump_failure"}}
+				case strings.Contains(q, "FROM issue_templates"):
+					return []map[string]any{tplRow}
+				}
+				return nil
+			})
+		},
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&created)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
+		"title":    {"Pump making noise"},
+		"asset_id": {"7"},
+		"priority": {"critical"},
+	})
+	assertRedirectsTo(t, rec, "/issues/1")
+
+	createdAt, err := time.Parse(time.RFC3339, toString(created["created_at"]))
+	if err != nil {
+		t.Fatalf("created_at is not RFC3339: %v", created["created_at"])
+	}
+	resDeadline, err := time.Parse(time.RFC3339, toString(created["sla_resolution_deadline"]))
+	if err != nil {
+		t.Fatalf("sla_resolution_deadline is not RFC3339: %v", created["sla_resolution_deadline"])
+	}
+	if d := resDeadline.Sub(createdAt); d != 90*time.Minute {
+		t.Errorf("expected the template's 90 minute resolution SLA, got %v", d)
+	}
+	frDeadline, err := time.Parse(time.RFC3339, toString(created["sla_first_response_deadline"]))
+	if err != nil {
+		t.Fatalf("sla_first_response_deadline is not RFC3339: %v", created["sla_first_response_deadline"])
+	}
+	if d := frDeadline.Sub(createdAt); d != 10*time.Minute {
+		t.Errorf("expected the template's 10 minute first-response SLA, got %v", d)
 	}
 }
 
