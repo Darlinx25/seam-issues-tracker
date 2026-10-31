@@ -68,10 +68,22 @@ func (h *UIHandler) canAssignIssues(r *http.Request) bool {
 }
 
 // canAssignIssue reports whether the current user may (re)assign the
-// responsible of an issue in the given state: assignment is administrative
-// (admins only) and the responsible is frozen once the issue has started.
-func (h *UIHandler) canAssignIssue(r *http.Request, state string) bool {
-	return h.canAssignIssues(r) && issueAssignBlockedKey(state) == ""
+// responsible of an issue: assignment is administrative (admins only), the
+// responsible is frozen once the issue has started, and a child's
+// responsible follows its case instead (see propagateIssueAssignment).
+func (h *UIHandler) canAssignIssue(r *http.Request, issue Issue) bool {
+	return h.canAssignIssues(r) && issueAssignRefusalKey(issue) == ""
+}
+
+// issueAssignRefusalKey returns the i18n key explaining why the responsible
+// cannot be changed for this issue, or an empty string when it still can. A
+// child issue is managed through its case, so it is refused before the state
+// is even looked at.
+func issueAssignRefusalKey(issue Issue) string {
+	if issue.MasterID > 0 {
+		return "issues.group.error.child_locked"
+	}
+	return issueAssignBlockedKey(issue.State)
 }
 
 // issueAssignBlockedKey returns the i18n key explaining why the responsible
@@ -135,7 +147,7 @@ func (h *UIHandler) IssueAssignFormPage(w http.ResponseWriter, r *http.Request) 
 		Issue:     issue,
 		CSRFToken: csrfToken,
 	}
-	if key := issueAssignBlockedKey(issue.State); key != "" {
+	if key := issueAssignRefusalKey(issue); key != "" {
 		data.Locked = true
 		data.Error = t(key)
 	} else {
@@ -182,7 +194,7 @@ func (h *UIHandler) IssueAssign(w http.ResponseWriter, r *http.Request) {
 			CSRFToken: csrfToken,
 			Error:     msg,
 		}
-		if issueAssignBlockedKey(issue.State) == "" {
+		if issueAssignRefusalKey(issue) == "" {
 			data.FormContent = h.renderAssignForm(ctx, issue.Assignee, csrfToken, msg)
 		} else {
 			data.Locked = true
@@ -190,7 +202,7 @@ func (h *UIHandler) IssueAssign(w http.ResponseWriter, r *http.Request) {
 		_ = h.page.Render(w, r, t("issues.assign.title"), "/issues", IssueAssignPage(data, t))
 	}
 
-	if key := issueAssignBlockedKey(issue.State); key != "" {
+	if key := issueAssignRefusalKey(issue); key != "" {
 		h.logger.Info("issue assign refused: the responsible can no longer be changed", "id", id, "state", issue.State)
 		renderErr(t(key))
 		return
@@ -216,6 +228,12 @@ func (h *UIHandler) IssueAssign(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue assigned but patch failed", "id", id, "error", err)
+	}
+
+	// The responsible of a case is the responsible of the group: hand it to
+	// every child, triaging them too when the case itself was triaged.
+	if issue.MasterID == 0 {
+		h.propagateIssueAssignment(ctx, issue, assignee, patchData["state"])
 	}
 
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)

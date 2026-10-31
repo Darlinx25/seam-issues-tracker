@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Insert the assign routes into MountIssuesRoutes.
+"""Insert the issue action routes into MountIssuesRoutes.
 
-Idempotent: if the routes are already registered the file is left untouched.
-Only the two assign lines are added, right after the reject routes, so
-upstream changes elsewhere in the block are preserved.
+Idempotent: each group of routes is only inserted when it is missing, so the
+file is left untouched once everything is registered. Only the route lines are
+added, right after the reject routes, so upstream changes elsewhere in the
+block are preserved.
 """
 import sys
 
@@ -12,16 +13,20 @@ ASSIGN_ROUTES = [
     '\tmux.HandleFunc("POST /issues/{id}/assign", r.requireAuth(r.handler.IssueAssign))\n',
 ]
 
+# Grouping into a case (iteration 2). The literal "/issues/group" pattern wins
+# over "/issues/{id}" by ServeMux precedence, the same way "/issues/new" does.
+GROUP_ROUTES = [
+    '\tmux.HandleFunc("GET /issues/group", r.requireAuth(r.handler.IssueGroupFormPage))\n',
+    '\tmux.HandleFunc("POST /issues/group", r.requireAuth(r.handler.IssueGroup))\n',
+    '\tmux.HandleFunc("POST /issues/{id}/ungroup", r.requireAuth(r.handler.IssueUngroup))\n',
+]
+
 REJECT_ROUTE = '\tmux.HandleFunc("POST /issues/{id}/reject", r.requireAuth(r.handler.IssueReject))\n'
 
 
 def main(path):
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8', newline='') as f:
         s = f.read()
-
-    if '"GET /issues/{id}/assign"' in s and '"POST /issues/{id}/assign"' in s:
-        print("  router: assign routes already present")
-        return
 
     start = s.find('func (r *Router) MountIssuesRoutes')
     if start == -1:
@@ -37,12 +42,23 @@ def main(path):
         print("  router: reject route anchor not found, skipping")
         return
 
-    block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(ASSIGN_ROUTES), 1)
-    s = s[:start] + block + s[end:]
+    changed = False
+    if '"GET /issues/{id}/assign"' not in block or '"POST /issues/{id}/assign"' not in block:
+        block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(ASSIGN_ROUTES), 1)
+        changed = True
+        print("  router: assign routes inserted")
+    if '"GET /issues/group"' not in block:
+        block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(GROUP_ROUTES), 1)
+        changed = True
+        print("  router: grouping routes inserted")
 
-    with open(path, 'w', encoding='utf-8') as f:
+    if not changed:
+        print("  router: issue routes already present")
+        return
+
+    s = s[:start] + block + s[end:]
+    with open(path, 'w', encoding='utf-8', newline='') as f:
         f.write(s)
-    print("  router: assign routes inserted")
 
 
 if __name__ == '__main__':

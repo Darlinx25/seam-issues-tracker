@@ -1138,7 +1138,9 @@ func TestIssuesList_FiltersByState(t *testing.T) {
 						{"state": "reported", "c": float64(1)},
 					}
 				}
-				if strings.Contains(q, "FROM issues") {
+				// Only the list query is remembered: grouping lookups also
+				// read "FROM issues" and would otherwise overwrite it.
+				if strings.Contains(q, "TOP 100") {
 					listQuery = q
 				}
 				return []map[string]any{
@@ -1180,7 +1182,9 @@ func TestIssuesList_InvalidStateFilterIgnored(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				if strings.Contains(q, "FROM issues") {
+				// Only the list query is remembered: grouping lookups also
+				// read "FROM issues" and would otherwise overwrite it.
+				if strings.Contains(q, "TOP 100") {
 					listQuery = q
 				}
 				return []map[string]any{}
@@ -1332,7 +1336,9 @@ func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				if strings.Contains(q, "FROM issues") {
+				// Only the list query is remembered: grouping lookups also
+				// read "FROM issues" and would otherwise overwrite it.
+				if strings.Contains(q, "TOP 100") {
 					listQuery = q
 				}
 				return []map[string]any{}
@@ -1371,7 +1377,9 @@ func TestIssuesList_SearchPrefillsInput(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				if strings.Contains(q, "FROM issues") {
+				// Only the list query is remembered: grouping lookups also
+				// read "FROM issues" and would otherwise overwrite it.
+				if strings.Contains(q, "TOP 100") {
 					listQuery = q
 				}
 				return []map[string]any{
@@ -1448,7 +1456,9 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				if strings.Contains(q, "FROM issues") {
+				// Only the list query is remembered: grouping lookups also
+				// read "FROM issues" and would otherwise overwrite it.
+				if strings.Contains(q, "TOP 100") {
 					listQuery = q
 				}
 				return []map[string]any{

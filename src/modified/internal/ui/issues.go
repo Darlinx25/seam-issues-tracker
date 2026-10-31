@@ -56,42 +56,54 @@ type Issue struct {
 	SLAResolutionDeadline    string
 	FirstResponseAt          string
 	FirstRespondedBy         int64
+
+	// MasterID links a child issue to the case that groups it (0 = not
+	// grouped). ChildCount is resolved on read for display only: it counts
+	// how many issues point at this one, i.e. whether it is a case.
+	MasterID   int64
+	ChildCount int
 }
 
 const issueDefName = "seam_issue_lifecycle"
 
 func issueFromEntity(e *xolu.Entity) Issue {
 	return Issue{
-		ID:                      e.ID,
-		Title:                   toString(e.Data["title"]),
-		Description:             toString(e.Data["description"]),
-		Priority:                toString(e.Data["priority"]),
-		Severity:                toString(e.Data["severity"]),
-		State:                   toString(e.Data["state"]),
-		RejectReason:            toString(e.Data["reject_reason"]),
-		MachineID:               toInt64(e.Data["machine_id"]),
-		AssetID:                 toInt64(e.Data["asset_id"]),
-		CreatedAt:               toString(e.Data["created_at"]),
-		ReportedBy:              toInt64(e.Data["reported_by"]),
-		Assignee:                toInt64(e.Data["assignee"]),
-		TemplateID:              toInt64(e.Data["template_id"]),
-		FormData:                toMap(e.Data["form_data"]),
-		AssetCategory:           toString(e.Data["asset_category"]),
+		ID:                       e.ID,
+		Title:                    toString(e.Data["title"]),
+		Description:              toString(e.Data["description"]),
+		Priority:                 toString(e.Data["priority"]),
+		Severity:                 toString(e.Data["severity"]),
+		State:                    toString(e.Data["state"]),
+		RejectReason:             toString(e.Data["reject_reason"]),
+		MachineID:                toInt64(e.Data["machine_id"]),
+		AssetID:                  toInt64(e.Data["asset_id"]),
+		CreatedAt:                toString(e.Data["created_at"]),
+		ReportedBy:               toInt64(e.Data["reported_by"]),
+		Assignee:                 toInt64(e.Data["assignee"]),
+		TemplateID:               toInt64(e.Data["template_id"]),
+		FormData:                 toMap(e.Data["form_data"]),
+		AssetCategory:            toString(e.Data["asset_category"]),
 		SLAFirstResponseDeadline: toString(e.Data["sla_first_response_deadline"]),
 		SLAResolutionDeadline:    toString(e.Data["sla_resolution_deadline"]),
-		FirstResponseAt:         toString(e.Data["first_response_at"]),
-		FirstRespondedBy:        toInt64(e.Data["first_responded_by"]),
+		FirstResponseAt:          toString(e.Data["first_response_at"]),
+		FirstRespondedBy:         toInt64(e.Data["first_responded_by"]),
+		MasterID:                 toInt64(e.Data["master_id"]),
 	}
 }
 
 // canActOnIssue reports whether the current user may run the lifecycle
-// actions (start, resolve, close, reject) on the given issue. An issue with
-// a responsible belongs to that person: only they -- and the admins, who
-// keep the last word -- may act on it, so a third party can neither start
-// nor resolve nor reject an issue that was handed to someone else. An issue
-// without a responsible keeps the previous behaviour: anyone with access to
-// it may act.
+// actions (start, resolve, close, reject) on the given issue. A child issue
+// is never managed on its own: its lifecycle follows the case that groups it
+// (see propagateIssueTransition), so the actions are refused here even for
+// the responsible and for admins. Otherwise, an issue with a responsible
+// belongs to that person: only they -- and the admins, who keep the last
+// word -- may act on it, so a third party can neither start nor resolve nor
+// reject an issue that was handed to someone else. An issue without a
+// responsible keeps the previous behaviour: anyone with access to it may act.
 func (h *UIHandler) canActOnIssue(r *http.Request, issue Issue) bool {
+	if issue.MasterID > 0 {
+		return false
+	}
 	u := h.getCurrentUser(r)
 	if u == nil || u.ID == 0 {
 		return false
@@ -305,8 +317,10 @@ func formatTimeShort(s string) string {
 // calculateSLADeadline computes the SLA deadline as a function of the
 // issue priority and the stored asset category. The table is fixed in
 // code per the canonical roadmap:
-//   critical asset (critico): critical 4h, high 24h, medium 48h
-//   normal asset (normal):    critical 24h, high 48h, medium 7d
+//
+//	critical asset (critico): critical 4h, high 24h, medium 48h
+//	normal asset (normal):    critical 24h, high 48h, medium 7d
+//
 // Any unrecognised combination falls back to a safe default.
 func calculateSLADeadline(priority, assetCategory string, now time.Time) string {
 	var d time.Duration
@@ -476,6 +490,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 				MachineID: toInt64(row["machine_id"]),
 				AssetID:   toInt64(row["asset_id"]),
 				Assignee:  toInt64(row["assignee"]),
+				MasterID:  toInt64(row["master_id"]),
 			})
 		}
 	} else {
@@ -502,7 +517,22 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		issues[i].AssigneeName = assigneeNames[issues[i].Assignee]
 	}
 
-	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts, SearchQuery: search}
+	// 5) Resolve the grouping links in a single read: the list shows each
+	// case's child count and each child's case from the same result, so a
+	// hundred rows don't become a hundred requests.
+	childCounts := map[int64]int{}
+	if links, err := h.listIssueLinks(ctx); err == nil {
+		for _, l := range links {
+			childCounts[l.MasterID]++
+		}
+	} else {
+		h.logger.Error("failed to load issue grouping links", "error", err)
+	}
+	for i := range issues {
+		issues[i].ChildCount = childCounts[issues[i].ID]
+	}
+
+	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts, SearchQuery: search, CanGroup: h.canManageIssueGroups(r)}
 	h.page.Render(w, r, t("issues.list_title"), "/issues", IssuesListPage(data, t))
 }
 
@@ -708,8 +738,27 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	data := assetDetail
 	data.Issue = issue
 	data.CSRFToken = h.GetCSRFToken(w, r)
-	data.CanAssign = h.canAssignIssue(r, issue.State)
+	data.CanAssign = h.canAssignIssue(r, issue)
 	data.CanAct = h.canActOnIssue(r, issue)
+	data.CanUngroup = issue.MasterID > 0 && h.canManageIssueGroups(r)
+
+	// Grouping is resolved on read for display only: a child points at its
+	// case, a case lists its children. Neither is stored twice.
+	if issue.MasterID > 0 {
+		if master, err := h.xoluClient.Get(ctx, "issues", issue.MasterID); err == nil {
+			data.MasterTitle = toString(master.Data["title"])
+		} else {
+			h.logger.Error("failed to load the case of an issue", "id", id, "master_id", issue.MasterID, "error", err)
+		}
+	} else if links, err := h.listIssueLinks(ctx); err == nil {
+		for _, l := range links {
+			if l.MasterID == issue.ID {
+				data.Children = append(data.Children, l)
+			}
+		}
+	} else {
+		h.logger.Error("failed to load the children of an issue", "id", id, "error", err)
+	}
 	if issue.TemplateID > 0 {
 		if tplEntity, err := h.xoluClient.Get(ctx, issueTemplatesEntity, issue.TemplateID); err == nil {
 			tpl := issueTemplateFromRow(tplEntity.Data)
@@ -781,7 +830,7 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 		if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
 			now := time.Now().UTC()
 			patch := map[string]any{
-				"first_response_at": now.Format(time.RFC3339),
+				"first_response_at":  now.Format(time.RFC3339),
 				"first_responded_by": u.ID,
 			}
 			if _, err := h.xoluClient.Patch(ctx, "issues", issue.ID, patch); err != nil {
@@ -801,7 +850,7 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if err != nil {
 		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
 		csrfToken := h.GetCSRFToken(w, r)
-		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue.State), CanAct: h.canActOnIssue(r, issue)}
+		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -812,6 +861,12 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue walked but state patch failed", "id", id, "error", err)
+	}
+
+	// The case is the single management point: the same input is replayed
+	// on every child, so the whole group keeps one state.
+	if issue.MasterID == 0 {
+		h.propagateIssueTransition(ctx, issue, input, payload, nil)
 	}
 
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
@@ -893,7 +948,7 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Info("issue reject walk failed", "id", id, "error", err)
-		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue.State), CanAct: h.canActOnIssue(r, issue)}
+		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -907,6 +962,11 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("issue rejected but patch failed", "id", id, "error", err)
 	}
 
+	// Rejecting a case rejects the whole group: the reason travels with it.
+	if issue.MasterID == 0 {
+		h.propagateIssueTransition(ctx, issue, "reject", payload, map[string]any{"reject_reason": motivo})
+	}
+
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -916,6 +976,10 @@ type IssuesListData struct {
 	StateFilter string
 	Counts      map[string]int
 	SearchQuery string
+
+	// CanGroup tells the page whether to offer the administrative "group
+	// into a case" action: admins only (see canManageIssueGroups).
+	CanGroup bool
 }
 
 // issueTabHref builds a state-tab link that keeps the current title search
@@ -953,6 +1017,14 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		if iss.AssigneeName != "" {
 			assigneeLine = t("issues.assignee") + ": " + iss.AssigneeName
 		}
+		// A case and a child both say so on the row, so the list tells the
+		// operator which issues are managed through another one.
+		if iss.ChildCount > 0 {
+			assigneeLine += " · " + t("issues.group.case_of") + ": " + strconv.Itoa(iss.ChildCount)
+		}
+		if iss.MasterID > 0 {
+			assigneeLine += " · " + t("issues.group.child_of") + ": #" + strconv.FormatInt(iss.MasterID, 10)
+		}
 		items[i] = SimpleListItem{
 			Href:     fmt.Sprintf("/issues/%d", iss.ID),
 			Title:    iss.Title,
@@ -976,6 +1048,22 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 	}
 
 	return func(b *mi.Builder) mi.Node {
+		// The header shows "New Issue" always and "Group issues" only for
+		// admins, since grouping is the administrative panel's action.
+		var headerActions []interface{}
+		headerActions = append(headerActions,
+			b.A(mi.Href("/issues/new"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+				t("issues.new"),
+			),
+		)
+		if data.CanGroup {
+			headerActions = append([]interface{}{
+				b.A(mi.Href("/issues/group"), mi.Class("px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
+					t("issues.group.button"),
+				),
+			}, headerActions...)
+		}
+
 		// Build filter tabs
 		var tabs []interface{}
 		// "All" tab
@@ -1021,9 +1109,7 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		return b.Div(mi.Class("space-y-6"),
 			b.Div(mi.Class("flex items-center justify-between"),
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.list_title")),
-				b.A(mi.Href("/issues/new"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-					t("issues.new"),
-				),
+				b.Div(append([]interface{}{mi.Class("flex items-center gap-3")}, headerActions...)...),
 			),
 			// Filter bar
 			b.Div(mi.Class("flex flex-wrap items-center gap-4"),
@@ -1289,8 +1375,17 @@ type IssueDetailData struct {
 	// CanAct tells the page whether the current user may run the lifecycle
 	// actions (start, resolve, close, reject) on this issue: the
 	// responsible, or an admin. An issue without a responsible can be acted
-	// on by anyone (see canActOnIssue).
+	// on by anyone, and a child issue never (see canActOnIssue).
 	CanAct bool
+
+	// CanUngroup tells the page whether to offer detaching this child from
+	// its case: admins only, and only while it is actually a child.
+	CanUngroup bool
+
+	// Grouping, resolved on read (display only): the case this issue
+	// belongs to, or the issues this case groups.
+	MasterTitle string
+	Children    []Issue
 
 	// Resolved from the linked asset on read (display only).
 	AssetCategory     string // "critico" | "normal"
@@ -1352,6 +1447,18 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.assignee")+": "),
 				b.Span(mi.Class("text-gray-700 dark:text-gray-300"), assigneeLabel),
 			))
+			if iss.MasterID > 0 {
+				caseLabel := "#" + strconv.FormatInt(iss.MasterID, 10)
+				if data.MasterTitle != "" {
+					caseLabel = data.MasterTitle
+				}
+				children = append(children, b.Div(
+					mi.Class("mt-4 px-3 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300 space-y-1"),
+					b.Div(t("issues.group.manage_here")),
+					b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.MasterID)), mi.Class("font-medium hover:underline"),
+						t("issues.group.child_of")+": "+caseLabel),
+				))
+			}
 			if data.TemplateName != "" {
 				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
 					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.template_label")+": "),
@@ -1413,6 +1520,13 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
 					mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
 					t("issues.action.reject"),
+				))
+			}
+			if data.CanUngroup {
+				children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/ungroup", iss.ID)),
+					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+					b.Button(mi.Type("submit"), mi.Class("px-4 py-2 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 rounded-lg font-medium hover:bg-amber-50 dark:hover:bg-amber-900/20"),
+						t("issues.group.ungroup")),
 				))
 			}
 			return b.Div(children...)
@@ -1543,7 +1657,24 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 			}
 		}
 
-		rightCol := []interface{}{slaCard, historyCard}
+		// A case lists its children, each linking back to its own detail;
+		// the child's own page points here instead (no actions there).
+		var childrenCard mi.Node
+		if iss.MasterID == 0 && len(data.Children) > 0 {
+			childrenCard = Card(t("issues.group.children"), func(b *mi.Builder) mi.Node {
+				var rows []interface{}
+				for _, c := range data.Children {
+					rows = append(rows, b.A(mi.Href(fmt.Sprintf("/issues/%d", c.ID)),
+						mi.Class("flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-gray-700/50"),
+						b.Span(mi.Class("text-sm text-gray-900 dark:text-white truncate"), c.Title),
+						issueStatusBadge(c.State, t)(b),
+					))
+				}
+				return b.Div(rows...)
+			})(b)
+		}
+
+		rightCol := []interface{}{childrenCard, slaCard, historyCard}
 		rightDivArgs := []interface{}{mi.Class("space-y-6")}
 		for _, n := range rightCol {
 			if n != nil {
@@ -1610,5 +1741,4 @@ func (h *UIHandler) ensureIssueFSMDefinition(ctx context.Context) (int64, error)
 		return 0, err
 	}
 	return result.ID, nil
-
 }
