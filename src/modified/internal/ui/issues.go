@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +39,7 @@ type Issue struct {
 	MachineID      int64
 	AssetID        int64
 	AssetName      string // resolved, not stored -- populated on read for display
+	Channel        string // "app" | "qr" | "api"; empty on rows created before it existed
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
 	Assignee       int64
@@ -77,6 +77,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		RejectReason:             toString(e.Data["reject_reason"]),
 		MachineID:                toInt64(e.Data["machine_id"]),
 		AssetID:                  toInt64(e.Data["asset_id"]),
+		Channel:                  toString(e.Data["channel"]),
 		CreatedAt:                toString(e.Data["created_at"]),
 		ReportedBy:               toInt64(e.Data["reported_by"]),
 		Assignee:                 toInt64(e.Data["assignee"]),
@@ -419,65 +420,62 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
 	ctx := r.Context()
 
-	// Allowed states (8-state lifecycle). Whitelist to avoid SQL injection via param.
-	allowedStates := map[string]bool{
-		"reported":    true,
-		"triaged":     true,
-		"in_progress": true,
-		"on_hold":     true,
-		"resolved":    true,
-		"closed":      true,
-		"rejected":    true,
-		"duplicate":   true,
+	filters := parseIssueListFilters(r.URL.Query())
+
+	var meID int64
+	if u := h.getCurrentUser(r); u != nil {
+		meID = u.ID
 	}
 
-	stateFilter := r.URL.Query().Get("state")
-	if !allowedStates[stateFilter] {
-		stateFilter = ""
+	// An asset filter typed as a name resolves to asset ids once. The text
+	// search does the same so it keeps matching the linked asset's name, as
+	// it did while the filtering ran client-side.
+	var filterAssetIDs, searchAssetIDs []int64
+	if filters.Asset != "" && !validOQLIntFilter(filters.Asset) {
+		filterAssetIDs = h.issueAssetIDsByName(ctx, filters.Asset, 100)
+	}
+	if filters.Search != "" {
+		searchAssetIDs = h.issueAssetIDsByName(ctx, filters.Search, 50)
 	}
 
-	// Text search (?q=) is applied client-side, over the rows already fetched
-	// from xolu (title plus linked asset name). It needs no extra query: it's
-	// only read here to prefill the box and keep the state-tab links in sync.
-	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	conds := filters.conditions(meID, filterAssetIDs, searchAssetIDs)
+	allConds := filters.withState(conds)
 
-	// 1) Counts per state (all issues, not paged) to populate tabs
-	counts := map[string]int{
-		"reported":    0,
-		"triaged":     0,
-		"in_progress": 0,
-		"on_hold":     0,
-		"resolved":    0,
-		"closed":      0,
-		"rejected":    0,
-		"duplicate":   0,
+	// 1) Counts per state, with every filter except the state itself, so the
+	// tabs say how many issues are behind each one under the current filters.
+	counts := map[string]int{}
+	for _, st := range issueStateOrder {
+		counts[st] = 0
 	}
-	if groupRes, err := h.xoluClient.OQL(ctx, "SELECT state, COUNT(*) AS c FROM issues GROUP BY state"); err == nil {
+	if groupRes, err := h.xoluClient.OQL(ctx, issueStateCountsQuery(conds)); err == nil {
 		for _, row := range groupRes.Data {
 			st := toString(row["state"])
-			if allowedStates[st] {
-				if v, ok := row["c"].(float64); ok {
-					counts[st] = int(v)
-				} else {
-					counts[st] = int(toInt64(row["c"]))
-				}
+			if _, ok := counts[st]; ok {
+				counts[st] = int(toInt64(row["c"]))
 			}
 		}
 	} else {
 		h.logger.Error("failed to count issues by state", "error", err)
 	}
 
-	// 2) List issues (filtered by state, as before). Keep TOP 100 and id DESC.
-	// The text search deliberately stays out of this query -- the page's own
-	// JS filters the rendered rows in real time.
-	listQuery := "SELECT TOP 100 * FROM issues"
-	if stateFilter != "" {
-		// Quote state (validated against whitelist). escapeOQL exists but enum is safe; quote-doubling is harmless.
-		listQuery += " WHERE state = '" + escapeOQL(stateFilter) + "'"
+	// 2) Total matching rows. The page is clamped against it so a stale
+	// ?page= lands on the last page instead of an empty one.
+	total := 0
+	if totalRes, err := h.xoluClient.OQL(ctx, issueListCountQuery(allConds)); err == nil && len(totalRes.Data) > 0 {
+		total = int(toInt64(totalRes.Data[0]["c"]))
+	} else if err != nil {
+		h.logger.Error("failed to count issues", "error", err)
 	}
-	listQuery += " ORDER BY id DESC"
+	totalPages := issueListTotalPages(total, issueListPageSize)
+	if filters.Page > totalPages {
+		filters.Page = totalPages
+	}
+	if filters.Page < 1 {
+		filters.Page = 1
+	}
 
-	result, err := h.xoluClient.OQL(ctx, listQuery)
+	// 3) The page of rows itself.
+	result, err := h.xoluClient.OQL(ctx, issueListPageQuery(allConds, filters.Page, issueListPageSize))
 	var issues []Issue
 	if err == nil {
 		for _, row := range result.Data {
@@ -487,6 +485,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 				Priority:  toString(row["priority"]),
 				Severity:  toString(row["severity"]),
 				State:     toString(row["state"]),
+				Channel:   toString(row["channel"]),
 				MachineID: toInt64(row["machine_id"]),
 				AssetID:   toInt64(row["asset_id"]),
 				Assignee:  toInt64(row["assignee"]),
@@ -497,7 +496,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to list issues", "error", err)
 	}
 
-	// 3) Resolve linked asset names (unchanged behavior)
+	// 4) Resolve linked asset names (unchanged behavior)
 	for i := range issues {
 		if issues[i].AssetID > 0 {
 			if asset, err := h.xoluClient.Get(ctx, "assets", issues[i].AssetID); err == nil {
@@ -506,7 +505,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4) Resolve the assignees' names in one query, so the list can show
+	// 5) Resolve the assignees' names in one query, so the list can show
 	// who is responsible for each issue without a request per row.
 	assigneeIDs := make([]int64, 0, len(issues))
 	for _, iss := range issues {
@@ -517,7 +516,7 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		issues[i].AssigneeName = assigneeNames[issues[i].Assignee]
 	}
 
-	// 5) Resolve the grouping links in a single read: the list shows each
+	// 6) Resolve the grouping links in a single read: the list shows each
 	// case's child count and each child's case from the same result, so a
 	// hundred rows don't become a hundred requests.
 	childCounts := map[int64]int{}
@@ -532,8 +531,37 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 		issues[i].ChildCount = childCounts[issues[i].ID]
 	}
 
-	data := IssuesListData{Issues: issues, StateFilter: stateFilter, Counts: counts, SearchQuery: search, CanGroup: h.canManageIssueGroups(r)}
+	data := IssuesListData{
+		Issues:   issues,
+		Filters:  filters,
+		Counts:   counts,
+		Total:    total,
+		PageSize: issueListPageSize,
+		CanGroup: h.canManageIssueGroups(r),
+	}
 	h.page.Render(w, r, t("issues.list_title"), "/issues", IssuesListPage(data, t))
+}
+
+// issueAssetIDsByName resolves an asset-name fragment to asset ids, so the
+// list can filter by asset without asking the operator for a numeric id.
+func (h *UIHandler) issueAssetIDsByName(ctx context.Context, name string, limit int) []int64 {
+	name = strings.TrimSpace(name)
+	if name == "" || h.xoluClient == nil {
+		return nil
+	}
+	query := "SELECT TOP " + strconv.Itoa(limit) + " id FROM assets WHERE name LIKE '%" + escapeOQL(name) + "%'"
+	res, err := h.xoluClient.OQL(ctx, query)
+	if err != nil {
+		h.logger.Error("failed to resolve asset ids by name", "error", err)
+		return nil
+	}
+	ids := make([]int64, 0, len(res.Data))
+	for _, row := range res.Data {
+		if id := toInt64(row["id"]); id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func issueFormDefaults() map[string]interface{} {
@@ -646,6 +674,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		"severity":    severity,
 		"state":       machine.State,
 		"machine_id":  machine.ID,
+		"channel":     "app",
 		"created_at":  now.Format(time.RFC3339),
 	}
 	if assetID > 0 {
@@ -972,32 +1001,15 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 
 // IssuesListData holds data for the issues list page.
 type IssuesListData struct {
-	Issues      []Issue
-	StateFilter string
-	Counts      map[string]int
-	SearchQuery string
+	Issues  []Issue
+	Filters IssueListFilters
+	Counts  map[string]int
+	Total   int
+	PageSize int
 
 	// CanGroup tells the page whether to offer the administrative "group
 	// into a case" action: admins only (see canManageIssueGroups).
 	CanGroup bool
-}
-
-// issueTabHref builds a state-tab link that keeps the current title search
-// (?q=) in place, so switching tabs doesn't silently drop the search. With no
-// search active it returns the plain URL the tabs have always used.
-func issueTabHref(state, search string) string {
-	if search == "" {
-		if state == "" {
-			return "/issues"
-		}
-		return "/issues?state=" + state
-	}
-	v := url.Values{}
-	if state != "" {
-		v.Set("state", state)
-	}
-	v.Set("q", search)
-	return "/issues?" + v.Encode()
 }
 
 // IssuesListPage renders the issues list page.
@@ -1005,8 +1017,10 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
 	}
+	now := time.Now().UTC()
 	items := make([]SimpleListItem, len(data.Issues))
-	for i, iss := range data.Issues {
+	for i := range data.Issues {
+		iss := data.Issues[i]
 		assetLine := t("issues.no_asset")
 		if iss.AssetName != "" {
 			assetLine = t("issues.linked_to") + ": " + iss.AssetName
@@ -1017,6 +1031,9 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		if iss.AssigneeName != "" {
 			assigneeLine = t("issues.assignee") + ": " + iss.AssigneeName
 		}
+		// The channel says where the report came in. Rows created before
+		// the field existed fall back to the app channel.
+		assigneeLine += " · " + t(issueChannelLabelKey(iss.Channel))
 		// A case and a child both say so on the row, so the list tells the
 		// operator which issues are managed through another one.
 		if iss.ChildCount > 0 {
@@ -1025,26 +1042,30 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		if iss.MasterID > 0 {
 			assigneeLine += " · " + t("issues.group.child_of") + ": #" + strconv.FormatInt(iss.MasterID, 10)
 		}
+
+		// State, priority and SLA together say how urgent the row is and
+		// whether its resolution clock is still running.
+		row := iss
+		badges := mi.H(func(b *mi.Builder) mi.Node {
+			children := []interface{}{mi.Class("flex items-center gap-2 shrink-0")}
+			children = append(children, issueStatusBadge(row.State, t)(b))
+			if row.Priority != "" {
+				children = append(children,
+					Badge(t("issues.priority."+row.Priority), issuePriorityVariant(row.Priority))(b))
+			}
+			if sla := issueSLABadge(row.SLAResolutionDeadline, row.State, now, t); sla != nil {
+				children = append(children, sla(b))
+			}
+			return b.Div(children...)
+		})
+
 		items[i] = SimpleListItem{
 			Href:     fmt.Sprintf("/issues/%d", iss.ID),
 			Title:    iss.Title,
 			Subtitle: assetLine,
 			Meta:     assigneeLine,
-			Badge:    issueStatusBadge(iss.State, t),
-			Search:   strings.TrimSpace(iss.Title + " " + iss.AssetName),
+			Badge:    badges,
 		}
-	}
-
-	// States order (logical lifecycle)
-	statesOrder := []string{
-		"reported",
-		"triaged",
-		"in_progress",
-		"on_hold",
-		"resolved",
-		"closed",
-		"rejected",
-		"duplicate",
 	}
 
 	return func(b *mi.Builder) mi.Node {
@@ -1064,146 +1085,26 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			}, headerActions...)
 		}
 
-		// Build filter tabs
-		var tabs []interface{}
-		// "All" tab
-		allCount := 0
-		if data.Counts != nil {
-			for _, c := range data.Counts {
-				allCount += c
-			}
-		}
-		allActive := data.StateFilter == ""
-		allClasses := "px-3 py-1.5 text-sm rounded-lg border transition-colors "
-		if allActive {
-			allClasses += "bg-indigo-600 text-white border-indigo-600"
-		} else {
-			allClasses += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
-		}
-		tabs = append(tabs, b.A(mi.Href(issueTabHref("", data.SearchQuery)), mi.Class(allClasses), t("issues.all"), " (", strconv.Itoa(allCount), ")"))
-
-		for _, st := range statesOrder {
-			c := 0
-			if data.Counts != nil {
-				c = data.Counts[st]
-			}
-			active := data.StateFilter == st
-			cls := "px-3 py-1.5 text-sm rounded-lg border transition-colors "
-			if active {
-				cls += "bg-indigo-600 text-white border-indigo-600"
-			} else {
-				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
-			}
-			label := t("issues.state." + st)
-			tabs = append(tabs, b.A(mi.Href(issueTabHref(st, data.SearchQuery)), mi.Class(cls), label, " (", strconv.Itoa(c), ")"))
+		// With filters active an empty list means "nothing matched", not
+		// "there are no issues yet", so say which one it is.
+		emptyMessage := t("issues.empty")
+		if data.Total == 0 && data.Filters.Active() {
+			emptyMessage = t("issues.filter.empty")
 		}
 
-		// The search box and the state tabs share this bar. Submitting the
-		// box keeps the active tab via a hidden input; clicking a tab keeps
-		// the search via issueTabHref -- so the two combine in either order.
-		// The search box and the state tabs share this bar. Filtering happens
-		// entirely in issueSearchScript below, over the rows already rendered
-		// from the fetched list, so it's instant and needs no extra query. The
-		// input only prefills from ?q= so a shared URL or a tab switch keeps
-		// the search.
 		return b.Div(mi.Class("space-y-6"),
 			b.Div(mi.Class("flex items-center justify-between"),
 				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.list_title")),
 				b.Div(append([]interface{}{mi.Class("flex items-center gap-3")}, headerActions...)...),
 			),
-			// Filter bar
-			b.Div(mi.Class("flex flex-wrap items-center gap-4"),
-				b.Div(mi.Class("relative flex-1 max-w-md"),
-					SearchInput("q", t("issues.search_placeholder"), data.SearchQuery,
-						mi.ID("issue-search"),
-						mi.Attr("style", "padding-right:2.5rem"),
-					)(b),
-					b.Button(mi.Type("button"), mi.ID("issue-search-clear"),
-						mi.Class("hidden absolute right-4 top-1/2 -translate-y-1/2 material-icons text-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"),
-						mi.Attr("aria-label", t("issues.search_clear")),
-						"close",
-					),
-				),
-				b.Div(append([]interface{}{mi.ID("issue-tabs"), mi.Class("flex flex-wrap gap-2")}, tabs...)...),
-			),
+			issueListFilterBar(data.Filters, data.Counts, t)(b),
 			b.Div(mi.ID("issue-list"),
-				SimpleListCard(items, t("issues.empty"))(b),
+				SimpleListCard(items, emptyMessage)(b),
 			),
-			b.Div(mi.ID("issue-no-results"),
-				mi.Class("hidden bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-500 dark:text-gray-400"),
-				t("issues.search_empty"),
-			),
-			b.Style(mi.Raw(issueSearchStyle)),
-			b.Script(mi.Raw(issueSearchScript)),
+			issueListPagination(data.Filters, len(items), data.Total, t)(b),
 		)
 	}
 }
-
-// issueSearchStyle hides the browser's own clear affordance on the search
-// input so it doesn't overlap the explicit clear button next to it.
-const issueSearchStyle = `
-#issue-search::-webkit-search-cancel-button,
-#issue-search::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
-#issue-search::-ms-clear { display: none; }
-`
-
-// issueSearchScript filters the already-rendered issue rows by their
-// data-search text (title plus linked asset name) as the user types: no
-// round trip and no query involved. It also keeps the clear button, the
-// state-tab links and the URL's ?q= in sync with the current input.
-const issueSearchScript = `
-(function () {
-  var input = document.getElementById('issue-search');
-  var clear = document.getElementById('issue-search-clear');
-  var list = document.getElementById('issue-list');
-  var noResults = document.getElementById('issue-no-results');
-  var tabs = document.getElementById('issue-tabs');
-  if (!input || !list) return;
-  var rows = Array.prototype.slice.call(list.querySelectorAll('a[data-search]'));
-  var links = tabs ? Array.prototype.slice.call(tabs.querySelectorAll('a')) : [];
-
-  function sync() {
-    var q = (input.value || '').trim();
-    var needle = q.toLowerCase();
-    if (clear) clear.classList.toggle('hidden', q === '');
-
-    var shown = 0;
-    rows.forEach(function (row) {
-      var hay = (row.getAttribute('data-search') || '').toLowerCase();
-      var match = needle === '' || hay.indexOf(needle) !== -1;
-      row.style.display = match ? '' : 'none';
-      if (match) shown++;
-    });
-    if (noResults) noResults.classList.toggle('hidden', !(needle !== '' && rows.length > 0 && shown === 0));
-
-    links.forEach(function (a) {
-      var href = a.getAttribute('href') || '';
-      var parts = href.split('?');
-      var params = new URLSearchParams(parts.length > 1 ? parts[1] : '');
-      if (q !== '') { params.set('q', q); } else { params.delete('q'); }
-      var query = params.toString();
-      a.setAttribute('href', parts[0] + (query ? '?' + query : ''));
-    });
-
-    try {
-      var url = new URL(window.location.href);
-      if (q !== '') { url.searchParams.set('q', q); } else { url.searchParams.delete('q'); }
-      window.history.replaceState(null, '', url.pathname + url.search);
-    } catch (e) {}
-  }
-
-  input.addEventListener('input', sync);
-  input.addEventListener('search', sync);
-  if (clear) {
-    clear.addEventListener('click', function () {
-      input.value = '';
-      sync();
-      input.focus();
-    });
-  }
-  sync();
-})();
-`
 
 // issueStatusBadge maps this module's own status vocabulary to the
 // shared Badge(text, variant) primitive (internal/ui/components.go) --

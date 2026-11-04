@@ -1138,9 +1138,9 @@ func TestIssuesList_FiltersByState(t *testing.T) {
 						{"state": "reported", "c": float64(1)},
 					}
 				}
-				// Only the list query is remembered: grouping lookups also
-				// read "FROM issues" and would otherwise overwrite it.
-				if strings.Contains(q, "TOP 100") {
+				// Only the page query is remembered: the count and grouping
+				// lookups also read "FROM issues" and would overwrite it.
+				if strings.Contains(q, "FETCH NEXT") {
 					listQuery = q
 				}
 				return []map[string]any{
@@ -1182,9 +1182,9 @@ func TestIssuesList_InvalidStateFilterIgnored(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				// Only the list query is remembered: grouping lookups also
-				// read "FROM issues" and would otherwise overwrite it.
-				if strings.Contains(q, "TOP 100") {
+				// Only the page query is remembered: the count and grouping
+				// lookups also read "FROM issues" and would overwrite it.
+				if strings.Contains(q, "FETCH NEXT") {
 					listQuery = q
 				}
 				return []map[string]any{}
@@ -1325,10 +1325,10 @@ func TestIssuesList_RendersAllStateTabsWithCounts(t *testing.T) {
 	}
 }
 
-// TestIssuesList_NoSearch_NoTitleFilter confirms the text search never
-// reaches the list query -- filtering is client-side over the fetched rows --
-// while the search box, its placeholder and the clear button are rendered.
-func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
+// TestIssuesList_NoFilters_NoWhereClause confirms a bare /issues request
+// filters nothing server-side, while the filter bar (search box, quick views
+// and the collapsed advanced panel) is rendered.
+func TestIssuesList_NoFilters_NoWhereClause(t *testing.T) {
 	var listQuery string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
@@ -1336,9 +1336,9 @@ func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				// Only the list query is remembered: grouping lookups also
-				// read "FROM issues" and would otherwise overwrite it.
-				if strings.Contains(q, "TOP 100") {
+				// Only the page query is remembered: the count and grouping
+				// lookups also read "FROM issues" and would overwrite it.
+				if strings.Contains(q, "FETCH NEXT") {
 					listQuery = q
 				}
 				return []map[string]any{}
@@ -1356,30 +1356,27 @@ func TestIssuesList_NoSearch_NoTitleFilter(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	if strings.Contains(listQuery, "WHERE") || strings.Contains(listQuery, "LIKE") {
-		t.Errorf("expected the search to stay out of the query, got %q", listQuery)
+		t.Errorf("expected no filters in the query, got %q", listQuery)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`name="q"`, "issues.search_placeholder", "issue-search-clear", "issue-no-results"} {
+	for _, want := range []string{`name="q"`, "issues.search_placeholder", "issues.filter.more", "issues.filter.assignee", "issues.view.mine"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q in the rendered list page", want)
 		}
 	}
 }
 
-// TestIssuesList_SearchPrefillsInput confirms ?q= prefills the box (so a
-// shared URL or tab switch keeps the term) and still issues the same
-// unfiltered list query, plus exposes the title as data-search for the JS.
-func TestIssuesList_SearchPrefillsInput(t *testing.T) {
+// TestIssuesList_SearchFiltersQuery confirms ?q= is applied server-side: the
+// page query carries a title LIKE and the box keeps the submitted value.
+func TestIssuesList_SearchFiltersQuery(t *testing.T) {
 	var listQuery string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
 			templateOQL(w, r, func(q string) []map[string]any {
-				if strings.Contains(q, "GROUP BY state") {
+				if strings.Contains(q, "GROUP BY state") || strings.Contains(q, "FROM assets") {
 					return []map[string]any{}
 				}
-				// Only the list query is remembered: grouping lookups also
-				// read "FROM issues" and would otherwise overwrite it.
-				if strings.Contains(q, "TOP 100") {
+				if strings.Contains(q, "FETCH NEXT") {
 					listQuery = q
 				}
 				return []map[string]any{
@@ -1398,57 +1395,18 @@ func TestIssuesList_SearchPrefillsInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if strings.Contains(listQuery, "LIKE") || strings.Contains(listQuery, "WHERE") {
-		t.Errorf("expected no server-side text filter, got %q", listQuery)
+	if !strings.Contains(listQuery, "title LIKE '%belt%'") {
+		t.Errorf("expected the search in the page query, got %q", listQuery)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `value="belt"`) {
+	if !strings.Contains(rec.Body.String(), `value="belt"`) {
 		t.Error("expected the search input to keep the submitted value")
 	}
-	if !strings.Contains(body, `data-search="Belt slipping"`) {
-		t.Error("expected the issue title to be exposed as data-search")
-	}
 }
 
-// TestIssuesList_SearchDataIncludesAssetName confirms the data-search text
-// the JS matches against includes the linked asset name ("Toyota - VH01"),
-// so searching for "vh01" finds an issue whose title doesn't contain it.
-func TestIssuesList_SearchDataIncludesAssetName(t *testing.T) {
-	server := mockOLU(t, map[string]http.HandlerFunc{
-		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
-			templateOQL(w, r, func(q string) []map[string]any {
-				if strings.Contains(q, "GROUP BY state") {
-					return []map[string]any{}
-				}
-				return []map[string]any{
-					{"id": float64(1), "title": "Motor overheat", "state": "reported", "asset_id": float64(9)},
-				}
-			})
-		},
-		"GET /api/v1/assets": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"id": float64(9), "name": "Toyota - VH01"})
-		},
-	})
-	defer server.Close()
-	h := newHandler(t, server)
-
-	req := httptest.NewRequest("GET", "/issues", nil)
-	rec := httptest.NewRecorder()
-	h.IssuesList(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), `data-search="Motor overheat Toyota - VH01"`) {
-		t.Error("expected data-search to combine the title and the asset name")
-	}
-}
-
-// TestIssuesList_SearchCombinesWithState confirms the state filter stays in
-// the query while the search term survives it: the tabs carry ?q= and the
-// box is prefilled, so switching tabs keeps filtering the same term.
-func TestIssuesList_SearchCombinesWithState(t *testing.T) {
+// TestIssuesList_SearchResolvesAssetName confirms the search still matches
+// the linked asset's name: the fragment is resolved to asset ids and the page
+// query widens the title pattern to that set.
+func TestIssuesList_SearchResolvesAssetName(t *testing.T) {
 	var listQuery string
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
@@ -1456,9 +1414,47 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 				if strings.Contains(q, "GROUP BY state") {
 					return []map[string]any{}
 				}
-				// Only the list query is remembered: grouping lookups also
-				// read "FROM issues" and would otherwise overwrite it.
-				if strings.Contains(q, "TOP 100") {
+				if strings.Contains(q, "FROM assets") {
+					return []map[string]any{{"id": float64(9)}}
+				}
+				if strings.Contains(q, "FETCH NEXT") {
+					listQuery = q
+				}
+				return []map[string]any{
+					{"id": float64(1), "title": "Motor overheat", "state": "reported", "asset_id": float64(9)},
+				}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?q=vh01", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(listQuery, "title LIKE '%vh01%'") {
+		t.Errorf("expected the title pattern, got %q", listQuery)
+	}
+	if !strings.Contains(listQuery, "asset_id IN (9)") {
+		t.Errorf("expected the resolved asset id in the query, got %q", listQuery)
+	}
+}
+
+// TestIssuesList_SearchCombinesWithState confirms the state filter and the
+// search apply together, and every state tab link carries the term.
+func TestIssuesList_SearchCombinesWithState(t *testing.T) {
+	var listQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") || strings.Contains(q, "FROM assets") {
+					return []map[string]any{}
+				}
+				if strings.Contains(q, "FETCH NEXT") {
 					listQuery = q
 				}
 				return []map[string]any{
@@ -1477,11 +1473,11 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if !strings.Contains(listQuery, "WHERE state = 'in_progress'") {
-		t.Errorf("expected the state filter to remain in the query, got %q", listQuery)
+	if !strings.Contains(listQuery, "state = 'in_progress'") {
+		t.Errorf("expected the state filter in the query, got %q", listQuery)
 	}
-	if strings.Contains(listQuery, "LIKE") {
-		t.Errorf("expected no text filter in the query, got %q", listQuery)
+	if !strings.Contains(listQuery, "title LIKE '%motor%'") {
+		t.Errorf("expected the text filter in the query, got %q", listQuery)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "q=motor") {
@@ -1492,10 +1488,30 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 	}
 }
 
-// TestIssuesList_SearchEmptyMessageRendered confirms the page ships the
-// search-specific no-results block (toggled by the JS when every row is
-// filtered out) translated through t().
-func TestIssuesList_SearchEmptyMessageRendered(t *testing.T) {
+// TestIssuesList_FilterFormKeepsStateTab confirms the filter form carries the
+// active state as a hidden field, so changing a select (which submits the
+// form) doesn't silently drop the state tab.
+func TestIssuesList_FilterFormKeepsStateTab(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?state=triaged", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="state"`) || !strings.Contains(body, `value="triaged"`) {
+		t.Error("expected the state to ride along as a hidden form field")
+	}
+}
+
+// TestIssuesList_EmptyFiltersMessage confirms an empty result with filters
+// active explains that nothing matched, instead of "No issues yet".
+func TestIssuesList_EmptyFiltersMessage(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{})
 	defer server.Close()
 	h := newHandler(t, server)
@@ -1508,11 +1524,293 @@ func TestIssuesList_SearchEmptyMessageRendered(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="issue-no-results"`) {
-		t.Error("expected the client-side no-results block to render")
+	if !strings.Contains(body, "issues.filter.empty") {
+		t.Error("expected the filtered-empty message to come from t()")
 	}
-	if !strings.Contains(body, "issues.search_empty") {
-		t.Error("expected the no-results text to come from t()")
+	if strings.Contains(body, ">issues.empty<") {
+		t.Error("expected the plain empty message not to render when filtering")
+	}
+}
+
+// issueListQueries captures the three OQL statements the list runs.
+type issueListQueries struct {
+	counts string
+	total  string
+	page   string
+}
+
+// captureIssueList runs IssuesList against a mock xolu and returns the OQL it
+// issued, so filter tests assert on the query instead of the rendered markup.
+func captureIssueList(t *testing.T, target string, claims *auth.Claims) issueListQueries {
+	t.Helper()
+	var got issueListQueries
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				switch {
+				case strings.Contains(q, "GROUP BY state"):
+					got.counts = q
+				case strings.HasPrefix(q, "SELECT COUNT(*)"):
+					got.total = q
+					return []map[string]any{{"c": float64(0)}}
+				case strings.Contains(q, "FETCH NEXT"):
+					got.page = q
+				}
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", target, nil)
+	if claims != nil {
+		req = req.WithContext(auth.ContextWithClaims(req.Context(), claims))
+	}
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	return got
+}
+
+// TestIssueSLAStatus covers the row badge classification, including the
+// states where the resolution clock has already stopped.
+func TestIssueSLAStatus(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+
+	cases := []struct {
+		name     string
+		deadline string
+		state    string
+		want     string
+	}{
+		{"no deadline", "", "reported", ""},
+		{"bad format", "not-a-date", "reported", ""},
+		{"overdue", at(-time.Hour), "in_progress", issueSLAOverdue},
+		{"due soon", at(time.Hour), "in_progress", issueSLADueSoon},
+		{"due soon at the window edge", at(issueSLADueSoonWindow), "reported", issueSLADueSoon},
+		{"on time", at(48 * time.Hour), "reported", issueSLAOnTime},
+		{"closed hides the badge", at(-time.Hour), "closed", ""},
+		{"resolved hides the badge", at(time.Hour), "resolved", ""},
+		{"rejected hides the badge", at(-time.Hour), "rejected", ""},
+	}
+	for _, tc := range cases {
+		if got := issueSLAStatus(tc.deadline, tc.state, now); got != tc.want {
+			t.Errorf("%s: expected %q, got %q", tc.name, tc.want, got)
+		}
+	}
+}
+
+// TestIssuesList_AssigneeUnassignedFilter confirms ?assignee=none matches
+// both a missing assignee field and a zero id.
+func TestIssuesList_AssigneeUnassignedFilter(t *testing.T) {
+	got := captureIssueList(t, "/issues?assignee=none", nil)
+	if !strings.Contains(got.page, "(assignee IS NULL OR assignee = 0)") {
+		t.Errorf("expected the unassigned predicate, got %q", got.page)
+	}
+}
+
+// TestIssuesList_AssigneeMeFilter confirms ?assignee=me resolves to the
+// session user's id.
+func TestIssuesList_AssigneeMeFilter(t *testing.T) {
+	got := captureIssueList(t, "/issues?assignee=me", &auth.Claims{UserID: 42, TenantID: 1, Role: "operator"})
+	if !strings.Contains(got.page, "assignee = 42") {
+		t.Errorf("expected the session user id, got %q", got.page)
+	}
+}
+
+// TestIssuesList_AssigneeMeWithoutSession confirms "me" without a session
+// matches nothing instead of silently listing the unassigned issues.
+func TestIssuesList_AssigneeMeWithoutSession(t *testing.T) {
+	got := captureIssueList(t, "/issues?assignee=me", nil)
+	if !strings.Contains(got.page, "assignee = -1") {
+		t.Errorf("expected a match-nothing predicate, got %q", got.page)
+	}
+}
+
+// TestIssuesList_SLAOverdueFilter confirms ?sla=overdue only considers open
+// issues whose resolution deadline has passed.
+func TestIssuesList_SLAOverdueFilter(t *testing.T) {
+	got := captureIssueList(t, "/issues?sla=overdue", nil)
+	for _, want := range []string{
+		"sla_resolution_deadline IS NOT NULL",
+		"sla_resolution_deadline <",
+		"state NOT IN ('resolved', 'closed', 'rejected', 'duplicate')",
+	} {
+		if !strings.Contains(got.page, want) {
+			t.Errorf("expected %q in the overdue predicate, got %q", want, got.page)
+		}
+	}
+}
+
+// TestIssuesList_SLANoneFilter confirms ?sla=none matches issues without a
+// resolution deadline.
+func TestIssuesList_SLANoneFilter(t *testing.T) {
+	got := captureIssueList(t, "/issues?sla=none", nil)
+	if !strings.Contains(got.page, "(sla_resolution_deadline IS NULL OR sla_resolution_deadline = '')") {
+		t.Errorf("expected the no-SLA predicate, got %q", got.page)
+	}
+}
+
+// TestIssuesList_DateRangeFilter confirms the creation-date bounds become
+// inclusive RFC3339 comparisons.
+func TestIssuesList_DateRangeFilter(t *testing.T) {
+	got := captureIssueList(t, "/issues?from=2026-01-01&to=2026-01-31", nil)
+	if !strings.Contains(got.page, "created_at >= '2026-01-01T00:00:00Z'") {
+		t.Errorf("expected the lower date bound, got %q", got.page)
+	}
+	if !strings.Contains(got.page, "created_at <= '2026-01-31T23:59:59Z'") {
+		t.Errorf("expected the upper date bound, got %q", got.page)
+	}
+}
+
+// TestIssuesList_EnumFilters confirms priority, severity and asset category
+// become quoted equality predicates, and that the app channel also matches
+// rows created before the field existed.
+func TestIssuesList_EnumFilters(t *testing.T) {
+	got := captureIssueList(t, "/issues?priority=high&severity=major&category=critico&channel=app", nil)
+	for _, want := range []string{
+		"priority = 'high'",
+		"severity = 'major'",
+		"asset_category = 'critico'",
+		"(channel = 'app' OR channel IS NULL OR channel = '')",
+	} {
+		if !strings.Contains(got.page, want) {
+			t.Errorf("expected %q in the query, got %q", want, got.page)
+		}
+	}
+}
+
+// TestIssuesList_UnknownFilterValuesDropped confirms hand-edited values that
+// are not in a whitelist never reach the OQL.
+func TestIssuesList_UnknownFilterValuesDropped(t *testing.T) {
+	got := captureIssueList(t, "/issues?priority=DROP&severity=x&category=y&channel=z&sla=bogus&from=notadate&assignee=abc&reporter=def", nil)
+	if strings.Contains(got.page, "WHERE") {
+		t.Errorf("expected every invalid filter to be dropped, got %q", got.page)
+	}
+	if strings.Contains(got.total, "WHERE") {
+		t.Errorf("expected the count query to be unfiltered too, got %q", got.total)
+	}
+}
+
+// TestIssuesList_PaginationOutOfRangeClamps confirms ?page= beyond the last
+// page lands on the last one instead of an empty page.
+func TestIssuesList_PaginationOutOfRangeClamps(t *testing.T) {
+	var pageQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				switch {
+				case strings.Contains(q, "GROUP BY state"):
+					return []map[string]any{}
+				case strings.HasPrefix(q, "SELECT COUNT(*)"):
+					return []map[string]any{{"c": float64(60)}}
+				case strings.Contains(q, "FETCH NEXT"):
+					pageQuery = q
+				}
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	// 60 rows at 25 per page is three pages, so ?page=9 must clamp to 3.
+	req := httptest.NewRequest("GET", "/issues?page=9", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(pageQuery, "OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY") {
+		t.Errorf("expected the last page offset, got %q", pageQuery)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "page=2") {
+		t.Error("expected the pagination links in the page")
+	}
+	if !strings.Contains(body, "60") {
+		t.Error("expected the total in the showing line")
+	}
+}
+
+// TestIssuesList_AssetNameFilterResolvesIds confirms a name fragment in
+// ?asset= is resolved to asset ids before building the query.
+func TestIssuesList_AssetNameFilterResolvesIds(t *testing.T) {
+	var pageQuery string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				switch {
+				case strings.Contains(q, "GROUP BY state"):
+					return []map[string]any{}
+				case strings.Contains(q, "FROM assets"):
+					return []map[string]any{{"id": float64(4)}, {"id": float64(5)}}
+				case strings.Contains(q, "FETCH NEXT"):
+					pageQuery = q
+				}
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues?asset=pump", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(pageQuery, "asset_id IN (4, 5)") {
+		t.Errorf("expected the resolved asset ids, got %q", pageQuery)
+	}
+}
+
+// TestIssuesList_RowBadgesAndChannel confirms each row shows its priority,
+// SLA state and channel, not just the lifecycle state.
+func TestIssuesList_RowBadgesAndChannel(t *testing.T) {
+	past := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if strings.Contains(q, "GROUP BY state") || strings.HasPrefix(q, "SELECT COUNT(*)") {
+					return []map[string]any{}
+				}
+				if strings.Contains(q, "FROM issues") && strings.Contains(q, "FETCH NEXT") {
+					return []map[string]any{{
+						"id":                      float64(1),
+						"title":                   "Leaking valve",
+						"state":                   "in_progress",
+						"priority":                "high",
+						"sla_resolution_deadline": past,
+						"channel":                 "qr",
+					}}
+				}
+				return []map[string]any{}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues", nil)
+	rec := httptest.NewRecorder()
+	h.IssuesList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"issues.priority.high", "issues.sla.overdue", "issues.channel.qr"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q on the row", want)
+		}
 	}
 }
 
