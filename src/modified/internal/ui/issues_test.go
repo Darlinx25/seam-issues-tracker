@@ -1326,8 +1326,8 @@ func TestIssuesList_RendersAllStateTabsWithCounts(t *testing.T) {
 }
 
 // TestIssuesList_NoFilters_NoWhereClause confirms a bare /issues request
-// filters nothing server-side, while the filter bar (search box, quick views
-// and the collapsed advanced panel) is rendered.
+// filters nothing server-side, while the toolbar, state tabs and filter panel
+// are rendered.
 func TestIssuesList_NoFilters_NoWhereClause(t *testing.T) {
 	var listQuery string
 	server := mockOLU(t, map[string]http.HandlerFunc{
@@ -1359,7 +1359,7 @@ func TestIssuesList_NoFilters_NoWhereClause(t *testing.T) {
 		t.Errorf("expected no filters in the query, got %q", listQuery)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`name="q"`, "issues.search_placeholder", "issues.filter.more", "issues.filter.assignee", "issues.view.mine"} {
+	for _, want := range []string{`name="q"`, "issues.search_placeholder", "issues.filter.button", "issues.filter.assignee", "issues.filter.group.classification", `id="issue-filters"`, "md:grid-cols-3"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q in the rendered list page", want)
 		}
@@ -1878,11 +1878,127 @@ func TestIssueListFilterBarNoAutoSubmit(t *testing.T) {
 	identity := func(key string, args ...any) string { return key }
 	body := renderIssueH(t, issueListFilterBar(IssueListFilters{Search: "pump", Sort: issueSortPriority}, map[string]int{}, identity))
 	if strings.Contains(body, "onchange") {
-		t.Error("filter bar must not auto-submit without JavaScript")
+		t.Error("filter bar must not auto-submit when a filter changes")
 	}
-	for _, want := range []string{"issues.filter.apply", "issues.filter.active", "sort=priority"} {
+	if got := strings.Count(body, "issues.filter.apply"); got != 1 {
+		t.Errorf("filter bar has %d apply buttons, want exactly 1", got)
+	}
+	for _, want := range []string{`method="get"`, `action="/issues"`, "issues.filter.apply", "issues.filter.active", "sort=priority"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q in the filter bar", want)
+		}
+	}
+}
+
+func TestIssueListFiltersFilterCount(t *testing.T) {
+	f := IssueListFilters{Search: "pump", State: "reported", Sort: issueSortPriority}
+	if got := f.FilterCount(); got != 0 {
+		t.Errorf("search, state and sort should not count, got %d", got)
+	}
+	f.Priority = "high"
+	f.SLA = issueSLAOverdue
+	f.Assignee = "me"
+	if got := f.FilterCount(); got != 3 {
+		t.Errorf("FilterCount() = %d, want 3", got)
+	}
+}
+
+func TestIssueListFilterBarRendersFilterPanel(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	body := renderIssueH(t, issueListFilterBar(IssueListFilters{Priority: "high"}, map[string]int{}, identity))
+	for _, want := range []string{`id="issue-filters"`, `id="issue-filters-toggle"`, `aria-controls="issue-filters"`, `aria-expanded="true"`, `type="button"`, "<details", "<summary", "issues.filter.button", "(1)", "issues.filter.group.classification", "issues.filter.advanced", "issues.filter.any"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in the filter workspace", want)
+		}
+	}
+	if strings.Contains(body, `hidden="hidden"`) {
+		t.Error("filter panel should be visible when a filter is active")
+	}
+	if strings.Contains(body, "<aside") {
+		t.Error("filters should render as a panel above the list, not in a sidebar")
+	}
+	for _, gone := range []string{"[details[open]~", "peer-checked:block", "group-open/filters"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("filter visibility must not depend on generated CSS %q", gone)
+		}
+	}
+	advanced := strings.Index(body, `class="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2"`)
+	if advanced < 0 {
+		t.Fatal("advanced filter grid not found")
+	}
+	if got := strings.Count(body[advanced:], `class="space-y-4"`); got < 2 {
+		t.Errorf("advanced filters should use two vertical columns, found %d column wrappers", got)
+	}
+	for _, gone := range []string{
+		"issues.filter.shortcuts", "issues.view.mine", "issues.filter.group.asset",
+		"issues.filter.priority_all", "issues.filter.channel_all", "issues.filter.assignee_all",
+		"issues.filter.reporter_all", "issues.filter.severity_all", "issues.filter.category_all",
+		"issues.filter.sla_all",
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("unexpected %q in the filter workspace", gone)
+		}
+	}
+}
+
+func TestIssueListFilterBarToggleDefaultsClosed(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	empty := renderIssueH(t, issueListFilterBar(IssueListFilters{}, map[string]int{}, identity))
+	if !strings.Contains(empty, `aria-expanded="false"`) {
+		t.Error("filter toggle should report collapsed when no filter is active")
+	}
+	if !strings.Contains(empty, `hidden="hidden"`) {
+		t.Error("filter panel should be hidden when no filter is active")
+	}
+	active := renderIssueH(t, issueListFilterBar(IssueListFilters{Priority: "high"}, map[string]int{}, identity))
+	if !strings.Contains(active, `aria-expanded="true"`) {
+		t.Error("filter toggle should report expanded when a filter is active")
+	}
+	if strings.Contains(active, `hidden="hidden"`) {
+		t.Error("filter panel should be visible when a filter is active")
+	}
+}
+
+func TestIssueListFilterBarAdvancedDetailsOpenWhenActive(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	collapsed := renderIssueH(t, issueListFilterBar(IssueListFilters{}, map[string]int{}, identity))
+	if strings.Contains(collapsed, `open="open"`) {
+		t.Error("advanced filters should be collapsed when no advanced filter is active")
+	}
+	expanded := renderIssueH(t, issueListFilterBar(IssueListFilters{Severity: "major"}, map[string]int{}, identity))
+	if !strings.Contains(expanded, `open="open"`) {
+		t.Error("advanced filters should be open when an advanced filter is active")
+	}
+}
+
+func TestIssueListWorkspaceWrapsListInFilterForm(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	content := mi.H(func(b *mi.Builder) mi.Node {
+		return b.Div(mi.ID("issue-content-marker"), "content")
+	})
+	body := renderIssueH(t, issueListWorkspace(IssueListFilters{}, map[string]int{}, content, nil, identity))
+	form := strings.Index(body, "<form")
+	toggle := strings.Index(body, `id="issue-filters-toggle"`)
+	filters := strings.Index(body, `id="issue-filters"`)
+	marker := strings.Index(body, "issue-content-marker")
+	if form < 0 || toggle < form || filters < toggle || marker < filters {
+		t.Errorf("expected form < filter toggle < filter panel < list content, got form=%d toggle=%d filters=%d content=%d", form, toggle, filters, marker)
+	}
+	if strings.Contains(body, "<aside") {
+		t.Error("filters should not render in a sidebar")
+	}
+}
+
+func TestIssueListFilterBarShowsActiveFiltersAndClear(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	empty := renderIssueH(t, issueListFilterBar(IssueListFilters{}, map[string]int{}, identity))
+	if strings.Contains(empty, "issues.filter.clear") {
+		t.Error("clear link should not render without active filters")
+	}
+	active := renderIssueH(t, issueListFilterBar(IssueListFilters{Priority: "high"}, map[string]int{}, identity))
+	for _, want := range []string{"issues.filter.active", "issues.filter.clear", "issues.priority.high"} {
+		if !strings.Contains(active, want) {
+			t.Errorf("expected %q in the active filter bar", want)
 		}
 	}
 }

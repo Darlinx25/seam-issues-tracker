@@ -219,12 +219,20 @@ func (f IssueListFilters) Active() bool {
 		f.SLA != "" || f.From != "" || f.To != ""
 }
 
-// HasAdvanced reports whether a filter living in the "more filters" panel is
-// set, so the page can render that panel open after a submit.
-func (f IssueListFilters) HasAdvanced() bool {
-	return f.Channel != "" || f.Severity != "" || f.Category != "" ||
-		f.Assignee != "" || f.Reporter != "" || f.Asset != "" ||
-		f.From != "" || f.To != ""
+// FilterCount reports how many facet filters are active. Search, state and
+// sort are left out: they already have their own visible controls, so the
+// count only summarises what lives behind the filters panel.
+func (f IssueListFilters) FilterCount() int {
+	count := 0
+	for _, value := range []string{
+		f.Priority, f.Severity, f.Channel, f.Category,
+		f.Assignee, f.Reporter, f.Asset, f.SLA, f.From, f.To,
+	} {
+		if value != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // values turns the filters back into query parameters, leaving out the empty
@@ -611,7 +619,7 @@ func issueFilterSelect(name, label string, options []SelectOption) mi.H {
 		attrs := []interface{}{
 			mi.Name(name),
 			mi.ID("issue-filter-" + name),
-			mi.Class("mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm"),
+			mi.Class("mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:[color-scheme:dark]"),
 		}
 		attrs = append(attrs, selectOptions(b, options)...)
 		return b.Div(
@@ -632,28 +640,9 @@ func issueFilterInput(name, label, value, inputType, placeholder string) mi.H {
 				mi.ID("issue-filter-"+name),
 				mi.Value(value),
 				mi.Placeholder(placeholder),
-				mi.Class("mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm"),
+				mi.Class("mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:[color-scheme:dark]"),
 			),
 		)
-	}
-}
-
-// issueQuickView is one of the predefined views above the list. Each one is
-// just a URL that sets (or clears) a filter, so there is no extra screen.
-type issueQuickView struct {
-	LabelKey string
-	Param    string
-	Value    string
-	Active   bool
-}
-
-// issueQuickViews returns the predefined views for the current filter set.
-func issueQuickViews(f IssueListFilters) []issueQuickView {
-	return []issueQuickView{
-		{LabelKey: "issues.view.mine", Param: "assignee", Value: "me", Active: f.Assignee == "me"},
-		{LabelKey: "issues.view.unassigned", Param: "assignee", Value: "none", Active: f.Assignee == "none"},
-		{LabelKey: "issues.view.overdue", Param: "sla", Value: issueSLAOverdue, Active: f.SLA == issueSLAOverdue},
-		{LabelKey: "issues.view.high_priority", Param: "priority", Value: "high", Active: f.Priority == "high"},
 	}
 }
 
@@ -663,7 +652,7 @@ func issueFilterGroup(label string, fields ...mi.H) mi.H {
 		if label != "" {
 			children = append(children, b.Div(mi.Class("text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"), label))
 		}
-		grid := []interface{}{mi.Class("grid grid-cols-1 sm:grid-cols-2 gap-3")}
+		grid := []interface{}{mi.Class("grid grid-cols-1 gap-3")}
 		for _, field := range fields {
 			grid = append(grid, field(b))
 		}
@@ -730,23 +719,53 @@ func issueActiveChips(f IssueListFilters, t func(key string, args ...any) string
 	return chips
 }
 
+// issueListFilterBar renders the filter workspace without list content. It is
+// kept as a small entry point for tests; IssuesListPage uses
+// issueListWorkspace so the list and pagination share the filter form.
 func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key string, args ...any) string) mi.H {
+	return issueListWorkspace(f, counts, nil, nil, t)
+}
+
+// issueListWorkspace lays the list, state tabs and filter panel inside one GET
+// form. The toolbar and filter fields sit above the list.
+func issueListWorkspace(f IssueListFilters, counts map[string]int, content, pagination mi.H, t func(key string, args ...any) string) mi.H {
 	return func(b *mi.Builder) mi.Node {
-		top := []interface{}{
+		main := []interface{}{mi.Class("min-w-0 space-y-4")}
+		main = append(main, issueListToolbar(f, t)(b))
+		main = append(main, issueListStateTabs(f, counts, t)(b))
+		chips := issueActiveChips(f, t)
+		if len(chips) > 0 {
+			main = append(main, issueListChipsRow(f, chips, t)(b))
+		}
+		if content != nil {
+			main = append(main, content(b))
+		}
+		if pagination != nil {
+			main = append(main, pagination(b))
+		}
+		return b.Form(
 			mi.Method("get"),
 			mi.Action("/issues"),
-			mi.Class("flex flex-wrap items-end gap-4"),
-		}
+			b.Div(main...),
+		)
+	}
+}
+
+func issueListToolbar(f IssueListFilters, t func(key string, args ...any) string) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		count := f.FilterCount()
+		card := []interface{}{mi.Class("rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800")}
+		row := []interface{}{mi.Class("flex flex-wrap items-end gap-3")}
 		if f.State != "" {
-			top = append(top, b.Input(mi.Type("hidden"), mi.Name("state"), mi.Value(f.State)))
+			row = append(row, b.Input(mi.Type("hidden"), mi.Name("state"), mi.Value(f.State)))
 		}
 		searchChildren := []interface{}{
-			mi.Class("relative flex-1 min-w-[16rem] max-w-md"),
+			mi.Class("relative flex-1 min-w-[150px] max-w-md text-gray-900 dark:text-white"),
 		}
 		searchChildren = append(searchChildren,
 			SearchInput("q", t("issues.search_placeholder"), f.Search,
 				mi.ID("issue-search"),
-				mi.Attr("style", "padding-right:2.5rem"),
+				mi.Attr("style", "padding-right:2.5rem;color:inherit"),
 			)(b),
 		)
 		if f.Search != "" {
@@ -758,136 +777,188 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 				),
 			)
 		}
-		top = append(top, b.Div(searchChildren...))
-		top = append(top,
-			issueFilterSelect("priority", t("issues.priority.label"),
-				issueSelectOptions(issuePriorityFilterValues, f.Priority, "issues.priority.", "issues.filter.priority_all", t))(b),
-			issueFilterSelect("sla", t("issues.filter.sla"), []SelectOption{
-				{Value: "", Label: t("issues.filter.sla_all"), Selected: f.SLA == ""},
-				{Value: issueSLAOverdue, Label: t("issues.sla.overdue"), Selected: f.SLA == issueSLAOverdue},
-				{Value: issueSLADueSoon, Label: t("issues.sla.due_soon"), Selected: f.SLA == issueSLADueSoon},
-				{Value: issueSLAOnTime, Label: t("issues.sla.on_time"), Selected: f.SLA == issueSLAOnTime},
-				{Value: issueSLANone, Label: t("issues.filter.sla_none"), Selected: f.SLA == issueSLANone},
-			})(b),
+		row = append(row, b.Div(searchChildren...))
+		row = append(row,
 			issueFilterSelect("sort", t("issues.sort.label"), []SelectOption{
 				{Value: issueSortNewest, Label: t("issues.sort.newest"), Selected: f.Sort == issueSortNewest},
 				{Value: issueSortOldest, Label: t("issues.sort.oldest"), Selected: f.Sort == issueSortOldest},
 				{Value: issueSortPriority, Label: t("issues.sort.priority"), Selected: f.Sort == issueSortPriority},
 				{Value: issueSortSLA, Label: t("issues.sort.sla"), Selected: f.Sort == issueSortSLA},
 			})(b),
-			b.Div(mi.Class("flex items-end gap-2"),
+		)
+		toggle := []interface{}{
+			mi.Type("button"),
+			mi.ID("issue-filters-toggle"),
+			mi.Attr("aria-controls", "issue-filters"),
+			mi.Attr("aria-expanded", strconv.FormatBool(count > 0)),
+			mi.Attr("onclick", "var p=document.getElementById('issue-filters');var o=p.hidden;p.hidden=!o;this.setAttribute('aria-expanded',o?'true':'false')"),
+			mi.Class("inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"),
+			b.Span(mi.Class("material-icons text-lg text-gray-400"), mi.Attr("aria-hidden", "true"), "tune"),
+			b.Span(t("issues.filter.button")),
+		}
+		if count > 0 {
+			toggle = append(toggle, issueFilterCountBadge(count)(b))
+		}
+		row = append(row, b.Button(toggle...))
+		row = append(row,
+			b.Div(mi.Class("flex items-end"),
 				b.Button(mi.Type("submit"),
 					mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"),
 					t("issues.filter.apply"),
 				),
-				b.A(mi.Href(f.clearFiltersLink()),
-					mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium"),
-					t("issues.filter.clear"),
-				),
 			),
 		)
+		card = append(card, b.Div(row...))
 
-		classification := issueFilterGroup(t("issues.filter.group.classification"),
-			issueFilterSelect("channel", t("issues.filter.channel"),
-				issueSelectOptions(issueChannelFilterValues, f.Channel, "issues.channel.", "issues.filter.channel_all", t)),
-			issueFilterSelect("severity", t("issues.severity.label"),
-				issueSelectOptions(issueSeverityFilterValues, f.Severity, "issues.severity.", "issues.filter.severity_all", t)),
-			issueFilterSelect("category", t("issues.filter.category"),
-				issueSelectOptions(issueCategoryFilterValues, f.Category, "issues.category.", "issues.filter.category_all", t)),
-		)
-		people := issueFilterGroup(t("issues.filter.group.people"),
-			issueFilterSelect("assignee", t("issues.filter.assignee"), []SelectOption{
-				{Value: "", Label: t("issues.filter.assignee_all"), Selected: f.Assignee == ""},
-				{Value: "me", Label: t("issues.filter.me"), Selected: f.Assignee == "me"},
-				{Value: "none", Label: t("issues.unassigned"), Selected: f.Assignee == "none"},
-			}),
-			issueFilterSelect("reporter", t("issues.filter.reporter"), []SelectOption{
-				{Value: "", Label: t("issues.filter.reporter_all"), Selected: f.Reporter == ""},
-				{Value: "me", Label: t("issues.filter.me"), Selected: f.Reporter == "me"},
-			}),
-		)
-		asset := issueFilterGroup(t("issues.filter.group.asset"),
-			issueFilterInput("asset", t("issues.filter.asset"), f.Asset, "text", t("issues.filter.asset_hint")),
-		)
-		dates := issueFilterGroup(t("issues.filter.group.time"),
-			issueFilterInput("from", t("issues.filter.created_from"), f.From, "date", ""),
-			issueFilterInput("to", t("issues.filter.created_to"), f.To, "date", ""),
-		)
-		panelFields := []interface{}{classification(b), people(b), asset(b), dates(b)}
-
-		panelAttrs := []interface{}{
-			mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4"),
+		panel := []interface{}{
+			mi.ID("issue-filters"),
+			mi.Attr("role", "region"),
+			mi.Attr("aria-label", t("issues.filter.button")),
+			mi.Class("mt-4 min-w-0 border-t border-gray-200 pt-4 dark:border-gray-700"),
 		}
-		if f.HasAdvanced() {
-			panelAttrs = append(panelAttrs, mi.Attr("open", "open"))
+		if count == 0 {
+			panel = append(panel, mi.Attr("hidden", "hidden"))
 		}
-		panelAttrs = append(panelAttrs,
-			b.Summary(mi.Class("cursor-pointer text-sm font-medium text-gray-600 dark:text-gray-300"), t("issues.filter.more")),
-			b.Div(append([]interface{}{mi.Class("mt-4 grid grid-cols-1 lg:grid-cols-2 gap-6")}, panelFields...)...),
-		)
-		formChildren := []interface{}{}
-		formChildren = append(formChildren, top...)
-		formChildren = append(formChildren, b.Details(panelAttrs...))
+		panel = append(panel, issueListFilterPanel(f, t)(b))
+		card = append(card, b.Div(panel...))
+		card = append(card, b.Noscript(b.Style("#issue-filters{display:block!important}")))
 
-		tabs := []interface{}{mi.ID("issue-tabs"), mi.Class("flex flex-wrap gap-2")}
+		return b.Div(card...)
+	}
+}
+
+func issueListStateTabs(f IssueListFilters, counts map[string]int, t func(key string, args ...any) string) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		tabs := []interface{}{
+			mi.ID("issue-tabs"),
+			mi.Class("flex min-w-0 items-center gap-1 overflow-x-auto border-b border-gray-200 pb-1 dark:border-gray-700"),
+		}
 		allCount := 0
 		for _, c := range counts {
 			allCount += c
 		}
 		tabLink := func(state, label string, count int, active bool) mi.Node {
-			cls := "px-3 py-1.5 text-sm rounded-lg border transition-colors "
+			cls := "shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors "
 			if active {
-				cls += "bg-indigo-600 text-white border-indigo-600"
+				cls += "border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300"
 			} else {
-				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
+				cls += "border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-200"
 			}
-			return b.A(mi.Href(f.link(map[string]string{"state": state})), mi.Class(cls),
-				label, " (", strconv.Itoa(count), ")")
+			linkAttrs := []interface{}{mi.Href(f.link(map[string]string{"state": state})), mi.Class(cls)}
+			if active {
+				linkAttrs = append(linkAttrs, mi.Attr("aria-current", "page"))
+			}
+			linkAttrs = append(linkAttrs, label, " (", strconv.Itoa(count), ")")
+			return b.A(linkAttrs...)
 		}
 		tabs = append(tabs, tabLink("", t("issues.all"), allCount, f.State == ""))
 		for _, st := range issueStateOrder {
 			tabs = append(tabs, tabLink(st, t("issues.state."+st), counts[st], f.State == st))
 		}
+		return b.Div(tabs...)
+	}
+}
 
-		quick := []interface{}{mi.Class("flex flex-wrap items-center gap-2")}
-		for _, view := range issueQuickViews(f) {
-			cls := "px-3 py-1.5 text-sm rounded-full border transition-colors "
-			if view.Active {
-				cls += "bg-indigo-600 text-white border-indigo-600"
-			} else {
-				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
-			}
-			value := view.Value
-			if view.Active {
-				value = ""
-			}
-			quick = append(quick,
-				b.A(mi.Href(f.link(map[string]string{view.Param: value})), mi.Class(cls), t(view.LabelKey)),
+func issueListChipsRow(f IssueListFilters, chips []issueFilterChip, t func(key string, args ...any) string) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		chipRow := []interface{}{mi.Class("flex flex-wrap items-center gap-2")}
+		chipRow = append(chipRow, b.Span(mi.Class("text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.filter.active")))
+		for _, chip := range chips {
+			chipRow = append(chipRow,
+				b.A(mi.Href(f.link(map[string]string{chip.Param: ""})),
+					mi.Class("inline-flex items-center gap-1 rounded-full border border-gray-300 bg-gray-50 px-2.5 py-1 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300"),
+					mi.Attr("aria-label", t("issues.filter.remove")+": "+chip.Label),
+					b.Span(chip.Label+": "+chip.Value),
+					b.Span(mi.Class("material-icons text-sm"), "close"),
+				),
 			)
 		}
+		chipRow = append(chipRow,
+			b.A(mi.Href(f.clearFiltersLink()),
+				mi.Class("ml-1 text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"),
+				t("issues.filter.clear"),
+			),
+		)
+		return b.Div(chipRow...)
+	}
+}
 
-		sections := []interface{}{mi.Class("space-y-4"),
-			b.Form(formChildren...),
-			b.Div(tabs...),
-			b.Div(quick...),
+func issueFilterCountBadge(n int) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		return b.Span(
+			mi.Class("inline-flex items-center justify-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300"),
+			"(", strconv.Itoa(n), ")",
+		)
+	}
+}
+
+func issueHasAdvancedFilters(f IssueListFilters) bool {
+	return f.Reporter != "" || f.Severity != "" || f.Channel != "" ||
+		f.Category != "" || f.Asset != "" || f.From != "" || f.To != ""
+}
+
+func issueListFilterPanel(f IssueListFilters, t func(key string, args ...any) string) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		primary := []interface{}{
+			issueFilterSelect("assignee", t("issues.filter.assignee"), []SelectOption{
+				{Value: "", Label: t("issues.filter.any"), Selected: f.Assignee == ""},
+				{Value: "me", Label: t("issues.filter.me"), Selected: f.Assignee == "me"},
+				{Value: "none", Label: t("issues.unassigned"), Selected: f.Assignee == "none"},
+			})(b),
+			issueFilterSelect("priority", t("issues.priority.label"),
+				issueSelectOptions(issuePriorityFilterValues, f.Priority, "issues.priority.", "issues.filter.any", t))(b),
+			issueFilterSelect("sla", t("issues.filter.sla"), []SelectOption{
+				{Value: "", Label: t("issues.filter.any"), Selected: f.SLA == ""},
+				{Value: issueSLAOverdue, Label: t("issues.sla.overdue"), Selected: f.SLA == issueSLAOverdue},
+				{Value: issueSLADueSoon, Label: t("issues.sla.due_soon"), Selected: f.SLA == issueSLADueSoon},
+				{Value: issueSLAOnTime, Label: t("issues.sla.on_time"), Selected: f.SLA == issueSLAOnTime},
+				{Value: issueSLANone, Label: t("issues.filter.sla_none"), Selected: f.SLA == issueSLANone},
+			})(b),
 		}
-		chips := issueActiveChips(f, t)
-		if len(chips) > 0 {
-			chipRow := []interface{}{mi.Class("flex flex-wrap items-center gap-2")}
-			chipRow = append(chipRow, b.Span(mi.Class("text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.filter.active")))
-			for _, chip := range chips {
-				chipRow = append(chipRow,
-					b.A(mi.Href(f.link(map[string]string{chip.Param: ""})),
-						mi.Class("inline-flex items-center gap-1 rounded-full border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-300"),
-						mi.Attr("aria-label", t("issues.filter.remove")+": "+chip.Label),
-						b.Span(chip.Label+": "+chip.Value),
-						b.Span(mi.Class("material-icons text-sm"), "close"),
-					),
-				)
-			}
-			sections = append(sections, b.Div(chipRow...))
+		primaryGrid := []interface{}{mi.Class("grid grid-cols-1 gap-4 md:grid-cols-3")}
+		primaryGrid = append(primaryGrid, primary...)
+
+		classification := issueFilterGroup(t("issues.filter.group.classification"),
+			issueFilterSelect("severity", t("issues.severity.label"),
+				issueSelectOptions(issueSeverityFilterValues, f.Severity, "issues.severity.", "issues.filter.any", t)),
+			issueFilterSelect("channel", t("issues.filter.channel"),
+				issueSelectOptions(issueChannelFilterValues, f.Channel, "issues.channel.", "issues.filter.any", t)),
+			issueFilterSelect("category", t("issues.filter.category"),
+				issueSelectOptions(issueCategoryFilterValues, f.Category, "issues.category.", "issues.filter.any", t)),
+		)
+		reporter := issueFilterSelect("reporter", t("issues.filter.reporter"), []SelectOption{
+			{Value: "", Label: t("issues.filter.any"), Selected: f.Reporter == ""},
+			{Value: "me", Label: t("issues.filter.me"), Selected: f.Reporter == "me"},
+		})
+		asset := issueFilterInput("asset", t("issues.filter.asset"), f.Asset, "text", t("issues.filter.asset_hint"))
+		dates := issueFilterGroup(t("issues.filter.group.time"),
+			issueFilterInput("from", t("issues.filter.created_from"), f.From, "date", ""),
+			issueFilterInput("to", t("issues.filter.created_to"), f.To, "date", ""),
+		)
+		advancedGrid := []interface{}{mi.Class("mt-3 grid grid-cols-1 gap-4 md:grid-cols-2")}
+		advancedGrid = append(advancedGrid,
+			b.Div(mi.Class("space-y-4"), reporter(b), classification(b)),
+			b.Div(mi.Class("space-y-4"), asset(b), dates(b)),
+		)
+
+		detailsAttrs := []interface{}{
+			mi.Class("mt-4 border-t border-gray-200 pt-4 dark:border-gray-700"),
 		}
-		return b.Div(sections...)
+		if issueHasAdvancedFilters(f) {
+			detailsAttrs = append(detailsAttrs, mi.Attr("open", "open"))
+		}
+		advanced := b.Details(append(detailsAttrs,
+			b.Summary(
+				mi.Class("flex cursor-pointer items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"),
+				b.Span(t("issues.filter.advanced")),
+			),
+			b.Div(advancedGrid...),
+		)...)
+
+		return b.Div(
+			b.Div(primaryGrid...),
+			advanced,
+		)
 	}
 }
 

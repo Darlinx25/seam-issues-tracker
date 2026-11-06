@@ -39,11 +39,13 @@ elif L == 'ja':
     d.setdefault('issues.group.title','問題をケースにまとめる'); d.setdefault('issues.group.button','問題をまとめる'); d.setdefault('issues.group.confirm','選択した問題をまとめる'); d.setdefault('issues.group.keep_note','最も古い問題がケースになり、残りはそれにリンクされ、そこから管理されます。'); d.setdefault('issues.group.empty','現在まとめられる問題はありません'); d.setdefault('issues.group.children','このケースの問題'); d.setdefault('issues.group.case_of','ケース対象'); d.setdefault('issues.group.child_of','ケースの一部'); d.setdefault('issues.group.manage_here','この問題はケースに属しています。ケースから管理してください。'); d.setdefault('issues.group.ungroup','ケースから切り離す'); d.setdefault('issues.group.error.too_few','2件以上の問題を選択してください'); d.setdefault('issues.group.error.child_selected','選択した問題のいずれかは既にケースに属しています'); d.setdefault('issues.group.error.master_selected','選択した問題のいずれかは既にケースです'); d.setdefault('issues.group.error.terminal','クローズ済みの問題はまとめられません'); d.setdefault('issues.group.error.state_mismatch','すべての問題が同じ状態である必要があります'); d.setdefault('issues.group.error.asset_mismatch','すべての問題が同じ資産に関するものである必要があります'); d.setdefault('issues.group.error.failed','問題をまとめられませんでした'); d.setdefault('issues.group.error.child_locked','担当者はケースから管理します')
     d.setdefault('issues.priority.label','優先度'); d.setdefault('issues.severity.label','重大度'); d.setdefault('issues.template_label','テンプレート'); d.setdefault('issues.form_data','追加フィールド'); d.setdefault('issues.error.title_required','タイトルは必須です')
     d.setdefault('issues.templates','テンプレート'); d.setdefault('issues.templates.list_title','インシデントテンプレート'); d.setdefault('issues.templates.new','新規テンプレート'); d.setdefault('issues.templates.edit_title','テンプレートを編集'); d.setdefault('issues.templates.detail_title','テンプレート'); d.setdefault('issues.templates.empty','テンプレートはまだありません'); d.setdefault('issues.templates.name','名前'); d.setdefault('issues.templates.name_placeholder','例：ポンプ故障報告'); d.setdefault('issues.templates.description','説明'); d.setdefault('issues.templates.fields','フィールド'); d.setdefault('issues.templates.fields_hint','このテンプレートを使用するときに表示される追加フィールド'); d.setdefault('issues.templates.add_field','フィールドを追加'); d.setdefault('issues.templates.no_fields','フィールドが定義されていません'); d.setdefault('issues.templates.version','バージョン'); d.setdefault('issues.templates.current','現行'); d.setdefault('issues.templates.versions','バージョン履歴'); d.setdefault('issues.templates.assigned_types','割り当てられた資産タイプ'); d.setdefault('issues.templates.assign','割り当てを保存'); d.setdefault('issues.templates.assign_hint','チェックしたタイプの資産を選択すると、このテンプレートが使用されます'); d.setdefault('issues.templates.no_asset_types','資産タイプが定義されていません'); d.setdefault('issues.templates.create','テンプレートを作成'); d.setdefault('issues.templates.save_changes','変更を保存'); d.setdefault('issues.templates.delete','テンプレートを削除'); d.setdefault('issues.templates.confirm_delete','このテンプレートを削除しますか？'); d.setdefault('issues.templates.not_found','テンプレートが見つかりません'); d.setdefault('issues.templates.error.name_required','名前は必須です'); d.setdefault('issues.templates.error.duplicate_key','その名前のテンプレートは既に存在します')
-# List filters: the search bar, the quick views and the advanced panel of the
-# issues list. Kept together so a new filter only needs its translations here.
+# List filters: the toolbar, state tabs and filter sidebar of the issues list.
+# Kept together so a new filter only needs its translations here.
 _FILTER_KEYS = {
     'en': {
-        'issues.filter.more': 'More filters',
+        'issues.filter.button': 'Filters',
+        'issues.filter.any': 'Any',
+        'issues.filter.advanced': 'More filters',
         'issues.filter.clear': 'Clear filters',
         'issues.filter.priority_all': 'Priority: all',
         'issues.filter.channel_all': 'Channel: all',
@@ -95,7 +97,9 @@ _FILTER_KEYS = {
         'issues.view.high_priority': 'High priority',
     },
     'es': {
-        'issues.filter.more': 'Más filtros',
+        'issues.filter.button': 'Filtros',
+        'issues.filter.any': 'Cualquiera',
+        'issues.filter.advanced': 'Más filtros',
         'issues.filter.clear': 'Limpiar filtros',
         'issues.filter.priority_all': 'Prioridad: todas',
         'issues.filter.channel_all': 'Canal: todos',
@@ -147,7 +151,9 @@ _FILTER_KEYS = {
         'issues.view.high_priority': 'Prioridad alta',
     },
     'pt': {
-        'issues.filter.more': 'Mais filtros',
+        'issues.filter.button': 'Filtros',
+        'issues.filter.any': 'Qualquer',
+        'issues.filter.advanced': 'Mais filtros',
         'issues.filter.clear': 'Limpar filtros',
         'issues.filter.priority_all': 'Prioridade: todas',
         'issues.filter.channel_all': 'Canal: todos',
@@ -199,7 +205,9 @@ _FILTER_KEYS = {
         'issues.view.high_priority': 'Prioridade alta',
     },
     'ja': {
-        'issues.filter.more': '絞り込みを追加',
+        'issues.filter.button': 'フィルター',
+        'issues.filter.any': 'すべて',
+        'issues.filter.advanced': 'その他のフィルター',
         'issues.filter.clear': 'フィルターを解除',
         'issues.filter.priority_all': '優先度: すべて',
         'issues.filter.channel_all': 'チャネル: すべて',

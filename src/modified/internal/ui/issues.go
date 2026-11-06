@@ -1117,10 +1117,11 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			}
 		}
 
+		pagination := issueListPagination(data.Filters, len(items), data.Total, t)
 		return ListPage(cfg,
-			Card("", issueListFilterBar(data.Filters, data.Counts, t)),
-			content,
-			issueListPagination(data.Filters, len(items), data.Total, t),
+			nil,
+			issueListWorkspace(data.Filters, data.Counts, content, pagination, t),
+			nil,
 		)(b)
 	}
 }

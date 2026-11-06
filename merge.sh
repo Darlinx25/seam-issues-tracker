@@ -11,6 +11,8 @@
 #   3. Copies files from src/new/ (files that don't exist in Seam)
 #   4. Applies .patch files from patches/ (for shared files like i18n)
 #   5. Fixes go.mod (removes broken replace directives, runs go mod tidy)
+#   6. Registers routes, wires the QR card and merges locales
+#   7. Regenerates Tailwind CSS so new utility classes exist
 #
 # After merge, build with:
 #   cd <output-dir> && go build -o /tmp/seam-bin ./cmd/seam
@@ -45,13 +47,13 @@ echo "Output:   $OUTPUT_DIR"
 echo ""
 
 # Step 1: Extract ZIP
-echo "[1/6] Extracting ZIP..."
+echo "[1/7] Extracting ZIP..."
 mkdir -p "$OUTPUT_DIR"
 unzip -o "$ZIP" -d "$OUTPUT_DIR" > /dev/null
 echo "  Extracted to $OUTPUT_DIR"
 
 # Step 2: Overlay modified files
-echo "[2/6] Applying modified files..."
+echo "[2/7] Applying modified files..."
 MODIFIED_DIR="$SCRIPT_DIR/src/modified"
 if [ -d "$MODIFIED_DIR" ]; then
     FIND_CMD=(find "$MODIFIED_DIR" -type f)
@@ -73,7 +75,7 @@ else
 fi
 
 # Step 3: Copy new files
-echo "[3/6] Adding new files..."
+echo "[3/7] Adding new files..."
 NEW_DIR="$SCRIPT_DIR/src/new"
 if [ -d "$NEW_DIR" ]; then
     FIND_CMD=(find "$NEW_DIR" -type f)
@@ -94,7 +96,7 @@ else
 fi
 
 # Step 4: Apply patches
-echo "[4/6] Applying patches..."
+echo "[4/7] Applying patches..."
 PATCHES_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCHES_DIR" ] && ls "$PATCHES_DIR"/*.patch > /dev/null 2>&1; then
     for patch in "$PATCHES_DIR"/*.patch; do
@@ -109,7 +111,7 @@ else
 fi
 
 # Step 5: Fix go.mod (remove broken replace directives, update deps)
-echo "[5/6] Fixing go.mod..."
+echo "[5/7] Fixing go.mod..."
 cd "$OUTPUT_DIR"
 if grep -q "^replace" go.mod 2>/dev/null; then
     echo "  Found replace directive in go.mod — fixing..."
@@ -135,7 +137,7 @@ fi
 
 # Step 6: Register the routes, wire the per-asset QR card, merge the issues
 # translation keys
-echo "[6/6] Registering routes, wiring the QR card and merging locales..."
+echo "[6/7] Registering routes, wiring the QR card and merging locales..."
 if [ -f "$OUTPUT_DIR/internal/ui/router.go" ] && [ -f "$SCRIPT_DIR/fix_router.py" ]; then
     python3 "$SCRIPT_DIR/fix_router.py" "$OUTPUT_DIR/internal/ui/router.go"
 fi
@@ -149,6 +151,29 @@ if [ -f "$SCRIPT_DIR/merge_locales.py" ]; then
             python3 "$SCRIPT_DIR/merge_locales.py" "$LF" "$L"
         fi
     done
+fi
+
+echo "[7/7] Regenerating Tailwind CSS..."
+if command -v npm > /dev/null 2>&1; then
+    if [ -f package.json ]; then
+        if [ ! -x node_modules/.bin/tailwindcss ]; then
+            echo "  Tailwind CLI missing; installing dependencies..."
+            npm ci --no-audit --no-fund > /dev/null 2>&1 || npm install --no-audit --no-fund > /dev/null 2>&1 || true
+        fi
+        if [ -x node_modules/.bin/tailwindcss ]; then
+            if npm run css; then
+                echo "  CSS regenerated"
+            else
+                echo "  WARNING: 'npm run css' failed. Run it manually before serving."
+            fi
+        else
+            echo "  WARNING: Tailwind CLI unavailable. Run 'npm install && npm run css' before serving."
+        fi
+    else
+        echo "  (no package.json, skipping)"
+    fi
+else
+    echo "  WARNING: npm not available. Run 'npm install && npm run css' before serving."
 fi
 
 echo ""
