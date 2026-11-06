@@ -475,21 +475,41 @@ func (h *UIHandler) IssuesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3) The page of rows itself.
-	result, err := h.xoluClient.OQL(ctx, issueListPageQuery(allConds, filters.Page, issueListPageSize))
+	var rows []map[string]any
+	var err error
+	if filters.Sort == issueSortPriority || filters.Sort == issueSortSLA {
+		rows, err = h.issueListPageByBuckets(ctx, allConds, issueListBuckets(filters.Sort), filters.Page, issueListPageSize)
+		if err != nil {
+			h.logger.Error("failed to list issues by bucket", "sort", filters.Sort, "error", err)
+			filters.Sort = ""
+			result, fallbackErr := h.xoluClient.OQL(ctx, issueListPageQuery(allConds, filters.Sort, filters.Page, issueListPageSize))
+			err = fallbackErr
+			if fallbackErr == nil {
+				rows = result.Data
+			}
+		}
+	} else {
+		result, queryErr := h.xoluClient.OQL(ctx, issueListPageQuery(allConds, filters.Sort, filters.Page, issueListPageSize))
+		err = queryErr
+		if queryErr == nil {
+			rows = result.Data
+		}
+	}
 	var issues []Issue
 	if err == nil {
-		for _, row := range result.Data {
+		for _, row := range rows {
 			issues = append(issues, Issue{
-				ID:        toInt64(row["id"]),
-				Title:     toString(row["title"]),
-				Priority:  toString(row["priority"]),
-				Severity:  toString(row["severity"]),
-				State:     toString(row["state"]),
-				Channel:   toString(row["channel"]),
-				MachineID: toInt64(row["machine_id"]),
-				AssetID:   toInt64(row["asset_id"]),
-				Assignee:  toInt64(row["assignee"]),
-				MasterID:  toInt64(row["master_id"]),
+				ID:                    toInt64(row["id"]),
+				Title:                 toString(row["title"]),
+				Priority:              toString(row["priority"]),
+				Severity:              toString(row["severity"]),
+				State:                 toString(row["state"]),
+				Channel:               toString(row["channel"]),
+				MachineID:             toInt64(row["machine_id"]),
+				AssetID:               toInt64(row["asset_id"]),
+				Assignee:              toInt64(row["assignee"]),
+				MasterID:              toInt64(row["master_id"]),
+				SLAResolutionDeadline: toString(row["sla_resolution_deadline"]),
 			})
 		}
 	} else {
@@ -1001,10 +1021,10 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 
 // IssuesListData holds data for the issues list page.
 type IssuesListData struct {
-	Issues  []Issue
-	Filters IssueListFilters
-	Counts  map[string]int
-	Total   int
+	Issues   []Issue
+	Filters  IssueListFilters
+	Counts   map[string]int
+	Total    int
 	PageSize int
 
 	// CanGroup tells the page whether to offer the administrative "group
@@ -1025,17 +1045,11 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 		if iss.AssetName != "" {
 			assetLine = t("issues.linked_to") + ": " + iss.AssetName
 		}
-		// The responsible, shown on every row so the list says who is on
-		// the issue without opening it.
 		assigneeLine := t("issues.assignee") + ": " + t("issues.unassigned")
 		if iss.AssigneeName != "" {
 			assigneeLine = t("issues.assignee") + ": " + iss.AssigneeName
 		}
-		// The channel says where the report came in. Rows created before
-		// the field existed fall back to the app channel.
 		assigneeLine += " · " + t(issueChannelLabelKey(iss.Channel))
-		// A case and a child both say so on the row, so the list tells the
-		// operator which issues are managed through another one.
 		if iss.ChildCount > 0 {
 			assigneeLine += " · " + t("issues.group.case_of") + ": " + strconv.Itoa(iss.ChildCount)
 		}
@@ -1043,18 +1057,13 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			assigneeLine += " · " + t("issues.group.child_of") + ": #" + strconv.FormatInt(iss.MasterID, 10)
 		}
 
-		// State, priority and SLA together say how urgent the row is and
-		// whether its resolution clock is still running.
 		row := iss
 		badges := mi.H(func(b *mi.Builder) mi.Node {
-			children := []interface{}{mi.Class("flex items-center gap-2 shrink-0")}
+			children := []interface{}{mi.Class("flex items-center gap-2")}
 			children = append(children, issueStatusBadge(row.State, t)(b))
 			if row.Priority != "" {
 				children = append(children,
 					Badge(t("issues.priority."+row.Priority), issuePriorityVariant(row.Priority))(b))
-			}
-			if sla := issueSLABadge(row.SLAResolutionDeadline, row.State, now, t); sla != nil {
-				children = append(children, sla(b))
 			}
 			return b.Div(children...)
 		})
@@ -1065,44 +1074,54 @@ func IssuesListPage(data IssuesListData, t func(key string, args ...any) string)
 			Subtitle: assetLine,
 			Meta:     assigneeLine,
 			Badge:    badges,
+			Aside:    issueSLAIndicator(row.SLAResolutionDeadline, row.State, now, t),
 		}
 	}
 
 	return func(b *mi.Builder) mi.Node {
-		// The header shows "New Issue" always and "Group issues" only for
-		// admins, since grouping is the administrative panel's action.
-		var headerActions []interface{}
-		headerActions = append(headerActions,
-			b.A(mi.Href("/issues/new"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-				t("issues.new"),
-			),
-		)
+		cfg := ListPageConfig{
+			Title:       t("issues.list_title"),
+			Subtitle:    t("issues.list.subtitle"),
+			CreateURL:   "/issues/new",
+			CreateLabel: t("issues.new"),
+			CreateIcon:  "add",
+		}
 		if data.CanGroup {
-			headerActions = append([]interface{}{
-				b.A(mi.Href("/issues/group"), mi.Class("px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
-					t("issues.group.button"),
-				),
-			}, headerActions...)
+			cfg.SecondaryURL = "/issues/group"
+			cfg.SecondaryLabel = t("issues.group.button")
+			cfg.SecondaryIcon = "group_work"
 		}
 
-		// With filters active an empty list means "nothing matched", not
-		// "there are no issues yet", so say which one it is.
-		emptyMessage := t("issues.empty")
-		if data.Total == 0 && data.Filters.Active() {
-			emptyMessage = t("issues.filter.empty")
+		var content mi.H
+		if len(items) == 0 {
+			icon := "assignment"
+			title := t("issues.empty")
+			description := t("issues.empty_hint")
+			var action mi.H
+			if data.Filters.Active() {
+				icon = "search_off"
+				title = t("issues.filter.empty_title")
+				description = t("issues.filter.empty")
+				action = func(b *mi.Builder) mi.Node {
+					return b.A(mi.Href(data.Filters.clearFiltersLink()), mi.Class("text-sm font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"), t("issues.filter.clear"))
+				}
+			}
+			content = func(b *mi.Builder) mi.Node {
+				return b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"),
+					EmptyState(icon, title, description, action)(b),
+				)
+			}
+		} else {
+			content = func(b *mi.Builder) mi.Node {
+				return b.Div(mi.ID("issue-list"), SimpleListCard(items, "")(b))
+			}
 		}
 
-		return b.Div(mi.Class("space-y-6"),
-			b.Div(mi.Class("flex items-center justify-between"),
-				b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), t("issues.list_title")),
-				b.Div(append([]interface{}{mi.Class("flex items-center gap-3")}, headerActions...)...),
-			),
-			issueListFilterBar(data.Filters, data.Counts, t)(b),
-			b.Div(mi.ID("issue-list"),
-				SimpleListCard(items, emptyMessage)(b),
-			),
-			issueListPagination(data.Filters, len(items), data.Total, t)(b),
-		)
+		return ListPage(cfg,
+			Card("", issueListFilterBar(data.Filters, data.Counts, t)),
+			content,
+			issueListPagination(data.Filters, len(items), data.Total, t),
+		)(b)
 	}
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"strings"
@@ -54,6 +55,13 @@ const issueSLADueSoonWindow = 4 * time.Hour
 // issueListPageSize is the number of rows shown per page.
 const issueListPageSize = 25
 
+const (
+	issueSortNewest   = ""
+	issueSortOldest   = "oldest"
+	issueSortPriority = "priority"
+	issueSortSLA      = "sla"
+)
+
 // issueSLAClosedStates are the states where the resolution clock has stopped.
 // Their deadline is neither filtered as overdue nor shown as a badge, since
 // the row no longer has a running clock to report.
@@ -86,7 +94,9 @@ type IssueListFilters struct {
 	SLA  string // ?sla=, one of the issueSLA* constants
 	From string // ?from=, inclusive creation date (YYYY-MM-DD)
 	To   string // ?to=, inclusive creation date (YYYY-MM-DD)
-	Page int    // 1-based; clamped by the handler once the total is known
+
+	Sort string
+	Page int // 1-based; clamped by the handler once the total is known
 }
 
 // issueValidValue reports whether v is one of allowed.
@@ -115,6 +125,7 @@ func parseIssueListFilters(q url.Values) IssueListFilters {
 		SLA:      q.Get("sla"),
 		From:     q.Get("from"),
 		To:       q.Get("to"),
+		Sort:     q.Get("sort"),
 		Page:     1,
 	}
 
@@ -146,6 +157,11 @@ func parseIssueListFilters(q url.Values) IssueListFilters {
 	case issueSLAOverdue, issueSLADueSoon, issueSLAOnTime, issueSLANone:
 	default:
 		f.SLA = ""
+	}
+	switch f.Sort {
+	case issueSortNewest, issueSortOldest, issueSortPriority, issueSortSLA:
+	default:
+		f.Sort = ""
 	}
 
 	f.Assignee = parseIssueActorFilter(f.Assignee)
@@ -206,9 +222,9 @@ func (f IssueListFilters) Active() bool {
 // HasAdvanced reports whether a filter living in the "more filters" panel is
 // set, so the page can render that panel open after a submit.
 func (f IssueListFilters) HasAdvanced() bool {
-	return f.Severity != "" || f.Category != "" ||
+	return f.Channel != "" || f.Severity != "" || f.Category != "" ||
 		f.Assignee != "" || f.Reporter != "" || f.Asset != "" ||
-		f.SLA != "" || f.From != "" || f.To != ""
+		f.From != "" || f.To != ""
 }
 
 // values turns the filters back into query parameters, leaving out the empty
@@ -232,6 +248,7 @@ func (f IssueListFilters) values() url.Values {
 	set("sla", f.SLA)
 	set("from", f.From)
 	set("to", f.To)
+	set("sort", f.Sort)
 	return v
 }
 
@@ -251,6 +268,14 @@ func (f IssueListFilters) link(overrides map[string]string) string {
 		return "/issues"
 	}
 	return "/issues?" + v.Encode()
+}
+
+func (f IssueListFilters) clearFiltersLink() string {
+	return f.link(map[string]string{
+		"q": "", "state": "", "priority": "", "severity": "", "channel": "",
+		"category": "", "assignee": "", "reporter": "", "asset": "", "sla": "",
+		"from": "", "to": "", "page": "",
+	})
 }
 
 // pageLink is link for a specific page; page 1 drops the parameter entirely.
@@ -402,21 +427,36 @@ func issueSLAStatus(deadline, state string, now time.Time) string {
 	}
 }
 
-// issueSLABadge renders the SLA state of a row, or nil when the issue has no
-// deadline to show.
-func issueSLABadge(deadline, state string, now time.Time, t func(key string, args ...any) string) mi.H {
-	status := issueSLAStatus(deadline, state, now)
-	if status == "" {
+func issueSLAIndicator(deadline, state string, now time.Time, t func(key string, args ...any) string) mi.H {
+	deadline = strings.TrimSpace(deadline)
+	if issueSLAClosedStates[state] {
 		return nil
 	}
+	if deadline == "" {
+		return IconBadge("schedule", t("issues.sla.none"), "default")
+	}
+	due, err := time.Parse(time.RFC3339, deadline)
+	if err != nil {
+		return IconBadge("schedule", t("issues.sla.none"), "default")
+	}
+
+	status := issueSLAStatus(deadline, state, now)
+	label := ""
 	variant := "success"
 	switch status {
 	case issueSLAOverdue:
 		variant = "danger"
+		label = t("issues.sla.overdue_by") + " " + formatDurationMinutes(int64(now.Sub(due)/time.Minute))
 	case issueSLADueSoon:
 		variant = "warning"
+		label = t("issues.sla.remaining") + " " + formatDurationMinutes(int64(due.Sub(now)/time.Minute))
+	case issueSLAOnTime:
+		label = t("issues.sla.remaining") + " " + formatDurationMinutes(int64(due.Sub(now)/time.Minute))
+	default:
+		return nil
 	}
-	return Badge(t("issues.sla."+status), variant)
+	title := t("issues.sla.due_at") + ": " + formatTimeShort(deadline)
+	return IconBadge("schedule", label, variant, mi.Attr("title", title), mi.Attr("aria-label", title))
 }
 
 // issuePriorityVariant maps a priority to a Badge variant.
@@ -455,16 +495,88 @@ func issueListCountQuery(conds []string) string {
 	return "SELECT COUNT(*) AS c FROM issues" + issueListWhere(conds)
 }
 
-// issueListPageQuery fetches one page of rows, newest first.
-func issueListPageQuery(conds []string, page, pageSize int) string {
+func issueListOrderBy(sort string) string {
+	if sort == issueSortOldest {
+		return "id ASC"
+	}
+	return "id DESC"
+}
+
+func issueListPageQuery(conds []string, sort string, page, pageSize int) string {
 	if page < 1 {
 		page = 1
 	}
 	offset := (page - 1) * pageSize
 	return "SELECT * FROM issues" + issueListWhere(conds) +
-		" ORDER BY id DESC" +
+		" ORDER BY " + issueListOrderBy(sort) +
 		" OFFSET " + strconv.Itoa(offset) + " ROWS" +
 		" FETCH NEXT " + strconv.Itoa(pageSize) + " ROWS ONLY"
+}
+
+type issueListBucket struct {
+	Where string
+	Order string
+}
+
+func issueListBuckets(sort string) []issueListBucket {
+	switch sort {
+	case issueSortPriority:
+		return []issueListBucket{
+			{Where: "priority = 'critical'", Order: "id DESC"},
+			{Where: "priority = 'high'", Order: "id DESC"},
+			{Where: "priority = 'medium'", Order: "id DESC"},
+			{Where: "priority = 'low'", Order: "id DESC"},
+			{Where: "(priority IS NULL OR priority = '' OR priority NOT IN ('critical', 'high', 'medium', 'low'))", Order: "id DESC"},
+		}
+	case issueSortSLA:
+		open := "state NOT IN ('resolved', 'closed', 'rejected', 'duplicate')"
+		hasDeadline := "sla_resolution_deadline IS NOT NULL AND sla_resolution_deadline <> ''"
+		return []issueListBucket{
+			{Where: open + " AND " + hasDeadline, Order: "sla_resolution_deadline ASC, id DESC"},
+			{Where: open + " AND (sla_resolution_deadline IS NULL OR sla_resolution_deadline = '')", Order: "id DESC"},
+			{Where: "state IN ('resolved', 'closed', 'rejected', 'duplicate')", Order: "id DESC"},
+		}
+	}
+	return nil
+}
+
+func (h *UIHandler) issueListPageByBuckets(ctx context.Context, conds []string, buckets []issueListBucket, page, pageSize int) ([]map[string]any, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || len(buckets) == 0 {
+		return nil, nil
+	}
+	skip := (page - 1) * pageSize
+	remaining := pageSize
+	rows := make([]map[string]any, 0, pageSize)
+	for _, bucket := range buckets {
+		if remaining == 0 {
+			break
+		}
+		fetch := remaining + skip
+		bucketConds := append(append([]string(nil), conds...), "("+bucket.Where+")")
+		query := "SELECT * FROM issues" + issueListWhere(bucketConds) +
+			" ORDER BY " + bucket.Order +
+			" OFFSET 0 ROWS FETCH NEXT " + strconv.Itoa(fetch) + " ROWS ONLY"
+		result, err := h.xoluClient.OQL(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		bucketRows := result.Data
+		if skip >= len(bucketRows) {
+			skip -= len(bucketRows)
+			continue
+		}
+		bucketRows = bucketRows[skip:]
+		skip = 0
+		if len(bucketRows) > remaining {
+			bucketRows = bucketRows[:remaining]
+		}
+		rows = append(rows, bucketRows...)
+		remaining -= len(bucketRows)
+	}
+	return rows, nil
 }
 
 // issueListTotalPages is the number of pages for a total, at least 1 so the
@@ -493,15 +605,13 @@ func issueSelectOptions(values []string, current, labelPrefix, anyLabelKey strin
 	return opts
 }
 
-// issueFilterSelect renders one labelled <select> that submits the form as
-// soon as it changes, the same behaviour the shared filter bar uses.
+// issueFilterSelect renders one labelled <select> of the filter form.
 func issueFilterSelect(name, label string, options []SelectOption) mi.H {
 	return func(b *mi.Builder) mi.Node {
 		attrs := []interface{}{
 			mi.Name(name),
 			mi.ID("issue-filter-" + name),
 			mi.Class("mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm"),
-			mi.Attr("onchange", "this.form.submit()"),
 		}
 		attrs = append(attrs, selectOptions(b, options)...)
 		return b.Div(
@@ -547,23 +657,86 @@ func issueQuickViews(f IssueListFilters) []issueQuickView {
 	}
 }
 
-// issueListFilterBar renders the GET form: the search box with the two
-// top-level filters, the collapsible advanced panel, the state tabs and the
-// quick views. Every control keeps the rest of the filters because the form
-// submits the whole set and the links are built from it.
+func issueFilterGroup(label string, fields ...mi.H) mi.H {
+	return func(b *mi.Builder) mi.Node {
+		children := []interface{}{mi.Class("space-y-3")}
+		if label != "" {
+			children = append(children, b.Div(mi.Class("text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"), label))
+		}
+		grid := []interface{}{mi.Class("grid grid-cols-1 sm:grid-cols-2 gap-3")}
+		for _, field := range fields {
+			grid = append(grid, field(b))
+		}
+		children = append(children, b.Div(grid...))
+		return b.Div(children...)
+	}
+}
+
+type issueFilterChip struct {
+	Param string
+	Label string
+	Value string
+}
+
+func issueActiveChips(f IssueListFilters, t func(key string, args ...any) string) []issueFilterChip {
+	var chips []issueFilterChip
+	actor := func(v string) string {
+		switch v {
+		case "me":
+			return t("issues.filter.me")
+		case "none":
+			return t("issues.unassigned")
+		default:
+			return "#" + v
+		}
+	}
+	if f.Search != "" {
+		chips = append(chips, issueFilterChip{"q", t("issues.filter.search"), f.Search})
+	}
+	if f.Priority != "" {
+		chips = append(chips, issueFilterChip{"priority", t("issues.priority.label"), t("issues.priority." + f.Priority)})
+	}
+	if f.Severity != "" {
+		chips = append(chips, issueFilterChip{"severity", t("issues.severity.label"), t("issues.severity." + f.Severity)})
+	}
+	if f.Channel != "" {
+		chips = append(chips, issueFilterChip{"channel", t("issues.filter.channel"), t("issues.channel." + f.Channel)})
+	}
+	if f.Category != "" {
+		chips = append(chips, issueFilterChip{"category", t("issues.filter.category"), t("issues.category." + f.Category)})
+	}
+	if f.Assignee != "" {
+		chips = append(chips, issueFilterChip{"assignee", t("issues.filter.assignee"), actor(f.Assignee)})
+	}
+	if f.Reporter != "" {
+		chips = append(chips, issueFilterChip{"reporter", t("issues.filter.reporter"), actor(f.Reporter)})
+	}
+	if f.Asset != "" {
+		chips = append(chips, issueFilterChip{"asset", t("issues.filter.asset"), f.Asset})
+	}
+	if f.SLA != "" {
+		label := t("issues.sla." + f.SLA)
+		if f.SLA == issueSLANone {
+			label = t("issues.filter.sla_none")
+		}
+		chips = append(chips, issueFilterChip{"sla", t("issues.filter.sla"), label})
+	}
+	if f.From != "" {
+		chips = append(chips, issueFilterChip{"from", t("issues.filter.created_from"), f.From})
+	}
+	if f.To != "" {
+		chips = append(chips, issueFilterChip{"to", t("issues.filter.created_to"), f.To})
+	}
+	return chips
+}
+
 func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key string, args ...any) string) mi.H {
 	return func(b *mi.Builder) mi.Node {
-		active := f.Active()
-
-		// Top row: search + priority + channel, mirroring the mockup.
 		top := []interface{}{
 			mi.Method("get"),
 			mi.Action("/issues"),
 			mi.Class("flex flex-wrap items-end gap-4"),
 		}
-		// The state lives in the tabs, not in a control of this form, so it
-		// rides along as a hidden field: changing a select must not drop the
-		// active tab.
 		if f.State != "" {
 			top = append(top, b.Input(mi.Type("hidden"), mi.Name("state"), mi.Value(f.State)))
 		}
@@ -589,29 +762,6 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 		top = append(top,
 			issueFilterSelect("priority", t("issues.priority.label"),
 				issueSelectOptions(issuePriorityFilterValues, f.Priority, "issues.priority.", "issues.filter.priority_all", t))(b),
-			issueFilterSelect("channel", t("issues.filter.channel"),
-				issueSelectOptions(issueChannelFilterValues, f.Channel, "issues.channel.", "issues.filter.channel_all", t))(b),
-		)
-
-		// Advanced panel: the rest of the filters, collapsed unless one is
-		// in use.
-		panelFields := []interface{}{
-			issueFilterSelect("assignee", t("issues.filter.assignee"), []SelectOption{
-				{Value: "", Label: t("issues.filter.assignee_all"), Selected: f.Assignee == ""},
-				{Value: "me", Label: t("issues.filter.me"), Selected: f.Assignee == "me"},
-				{Value: "none", Label: t("issues.unassigned"), Selected: f.Assignee == "none"},
-			})(b),
-		}
-		panelFields = append(panelFields,
-			issueFilterSelect("reporter", t("issues.filter.reporter"), []SelectOption{
-				{Value: "", Label: t("issues.filter.reporter_all"), Selected: f.Reporter == ""},
-				{Value: "me", Label: t("issues.filter.me"), Selected: f.Reporter == "me"},
-			})(b),
-			issueFilterInput("asset", t("issues.filter.asset"), f.Asset, "text", t("issues.filter.asset_hint"))(b),
-			issueFilterSelect("severity", t("issues.severity.label"),
-				issueSelectOptions(issueSeverityFilterValues, f.Severity, "issues.severity.", "issues.filter.severity_all", t))(b),
-			issueFilterSelect("category", t("issues.filter.category"),
-				issueSelectOptions(issueCategoryFilterValues, f.Category, "issues.category.", "issues.filter.category_all", t))(b),
 			issueFilterSelect("sla", t("issues.filter.sla"), []SelectOption{
 				{Value: "", Label: t("issues.filter.sla_all"), Selected: f.SLA == ""},
 				{Value: issueSLAOverdue, Label: t("issues.sla.overdue"), Selected: f.SLA == issueSLAOverdue},
@@ -619,17 +769,51 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 				{Value: issueSLAOnTime, Label: t("issues.sla.on_time"), Selected: f.SLA == issueSLAOnTime},
 				{Value: issueSLANone, Label: t("issues.filter.sla_none"), Selected: f.SLA == issueSLANone},
 			})(b),
-			issueFilterInput("from", t("issues.filter.created_from"), f.From, "date", "")(b),
-			issueFilterInput("to", t("issues.filter.created_to"), f.To, "date", "")(b),
-		)
-		panelFields = append(panelFields,
-			b.Div(mi.Class("flex items-end"),
+			issueFilterSelect("sort", t("issues.sort.label"), []SelectOption{
+				{Value: issueSortNewest, Label: t("issues.sort.newest"), Selected: f.Sort == issueSortNewest},
+				{Value: issueSortOldest, Label: t("issues.sort.oldest"), Selected: f.Sort == issueSortOldest},
+				{Value: issueSortPriority, Label: t("issues.sort.priority"), Selected: f.Sort == issueSortPriority},
+				{Value: issueSortSLA, Label: t("issues.sort.sla"), Selected: f.Sort == issueSortSLA},
+			})(b),
+			b.Div(mi.Class("flex items-end gap-2"),
 				b.Button(mi.Type("submit"),
 					mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"),
-					t("action.filter"),
+					t("issues.filter.apply"),
+				),
+				b.A(mi.Href(f.clearFiltersLink()),
+					mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium"),
+					t("issues.filter.clear"),
 				),
 			),
 		)
+
+		classification := issueFilterGroup(t("issues.filter.group.classification"),
+			issueFilterSelect("channel", t("issues.filter.channel"),
+				issueSelectOptions(issueChannelFilterValues, f.Channel, "issues.channel.", "issues.filter.channel_all", t)),
+			issueFilterSelect("severity", t("issues.severity.label"),
+				issueSelectOptions(issueSeverityFilterValues, f.Severity, "issues.severity.", "issues.filter.severity_all", t)),
+			issueFilterSelect("category", t("issues.filter.category"),
+				issueSelectOptions(issueCategoryFilterValues, f.Category, "issues.category.", "issues.filter.category_all", t)),
+		)
+		people := issueFilterGroup(t("issues.filter.group.people"),
+			issueFilterSelect("assignee", t("issues.filter.assignee"), []SelectOption{
+				{Value: "", Label: t("issues.filter.assignee_all"), Selected: f.Assignee == ""},
+				{Value: "me", Label: t("issues.filter.me"), Selected: f.Assignee == "me"},
+				{Value: "none", Label: t("issues.unassigned"), Selected: f.Assignee == "none"},
+			}),
+			issueFilterSelect("reporter", t("issues.filter.reporter"), []SelectOption{
+				{Value: "", Label: t("issues.filter.reporter_all"), Selected: f.Reporter == ""},
+				{Value: "me", Label: t("issues.filter.me"), Selected: f.Reporter == "me"},
+			}),
+		)
+		asset := issueFilterGroup(t("issues.filter.group.asset"),
+			issueFilterInput("asset", t("issues.filter.asset"), f.Asset, "text", t("issues.filter.asset_hint")),
+		)
+		dates := issueFilterGroup(t("issues.filter.group.time"),
+			issueFilterInput("from", t("issues.filter.created_from"), f.From, "date", ""),
+			issueFilterInput("to", t("issues.filter.created_to"), f.To, "date", ""),
+		)
+		panelFields := []interface{}{classification(b), people(b), asset(b), dates(b)}
 
 		panelAttrs := []interface{}{
 			mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4"),
@@ -639,15 +823,12 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 		}
 		panelAttrs = append(panelAttrs,
 			b.Summary(mi.Class("cursor-pointer text-sm font-medium text-gray-600 dark:text-gray-300"), t("issues.filter.more")),
-			b.Div(append([]interface{}{mi.Class("mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4")}, panelFields...)...),
+			b.Div(append([]interface{}{mi.Class("mt-4 grid grid-cols-1 lg:grid-cols-2 gap-6")}, panelFields...)...),
 		)
-
 		formChildren := []interface{}{}
 		formChildren = append(formChildren, top...)
 		formChildren = append(formChildren, b.Details(panelAttrs...))
 
-		// State tabs: same counts as before, but every link now carries the
-		// active filters.
 		tabs := []interface{}{mi.ID("issue-tabs"), mi.Class("flex flex-wrap gap-2")}
 		allCount := 0
 		for _, c := range counts {
@@ -676,7 +857,6 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 			} else {
 				cls += "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
 			}
-			// Clicking an active chip clears its filter.
 			value := view.Value
 			if view.Active {
 				value = ""
@@ -685,19 +865,29 @@ func issueListFilterBar(f IssueListFilters, counts map[string]int, t func(key st
 				b.A(mi.Href(f.link(map[string]string{view.Param: value})), mi.Class(cls), t(view.LabelKey)),
 			)
 		}
-		if active {
-			quick = append(quick,
-				b.A(mi.Href("/issues"), mi.Class("ml-auto text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 underline"),
-					t("issues.filter.clear"),
-				),
-			)
-		}
 
-		return b.Div(mi.Class("space-y-4"),
+		sections := []interface{}{mi.Class("space-y-4"),
 			b.Form(formChildren...),
 			b.Div(tabs...),
 			b.Div(quick...),
-		)
+		}
+		chips := issueActiveChips(f, t)
+		if len(chips) > 0 {
+			chipRow := []interface{}{mi.Class("flex flex-wrap items-center gap-2")}
+			chipRow = append(chipRow, b.Span(mi.Class("text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.filter.active")))
+			for _, chip := range chips {
+				chipRow = append(chipRow,
+					b.A(mi.Href(f.link(map[string]string{chip.Param: ""})),
+						mi.Class("inline-flex items-center gap-1 rounded-full border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 text-xs text-gray-700 dark:text-gray-300"),
+						mi.Attr("aria-label", t("issues.filter.remove")+": "+chip.Label),
+						b.Span(chip.Label+": "+chip.Value),
+						b.Span(mi.Class("material-icons text-sm"), "close"),
+					),
+				)
+			}
+			sections = append(sections, b.Div(chipRow...))
+		}
+		return b.Div(sections...)
 	}
 }
 

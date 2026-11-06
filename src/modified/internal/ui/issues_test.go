@@ -1489,8 +1489,8 @@ func TestIssuesList_SearchCombinesWithState(t *testing.T) {
 }
 
 // TestIssuesList_FilterFormKeepsStateTab confirms the filter form carries the
-// active state as a hidden field, so changing a select (which submits the
-// form) doesn't silently drop the state tab.
+// active state as a hidden field, so applying the filters doesn't silently
+// drop the state tab.
 func TestIssuesList_FilterFormKeepsStateTab(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{})
 	defer server.Close()
@@ -1807,10 +1807,97 @@ func TestIssuesList_RowBadgesAndChannel(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"issues.priority.high", "issues.sla.overdue", "issues.channel.qr"} {
+	for _, want := range []string{"issues.priority.high", "issues.sla.overdue_by", "issues.channel.qr"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected %q on the row", want)
 		}
+	}
+}
+
+func renderIssueH(t *testing.T, h mi.H) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := h(&mi.Builder{}).Render(&buf); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	return buf.String()
+}
+
+func TestIssueSLAIndicator(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	identity := func(key string, args ...any) string { return key }
+
+	if got := issueSLAIndicator("", "reported", now, identity); got == nil {
+		t.Fatal("expected an indicator for an open issue without a deadline")
+	} else if body := renderIssueH(t, got); !strings.Contains(body, "issues.sla.none") {
+		t.Errorf("open issue without deadline should say no SLA, got %q", body)
+	}
+	if got := issueSLAIndicator(now.Add(-2*time.Hour).Format(time.RFC3339), "reported", now, identity); got == nil {
+		t.Fatal("expected an indicator for an overdue open issue")
+	} else if body := renderIssueH(t, got); !strings.Contains(body, "issues.sla.overdue_by") || !strings.Contains(body, "schedule") {
+		t.Errorf("overdue indicator missing label or icon: %q", body)
+	}
+	if got := issueSLAIndicator(now.Add(2*time.Hour).Format(time.RFC3339), "in_progress", now, identity); got == nil {
+		t.Fatal("expected an indicator for a due-soon open issue")
+	} else if body := renderIssueH(t, got); !strings.Contains(body, "issues.sla.remaining") {
+		t.Errorf("due-soon indicator missing remaining label: %q", body)
+	}
+	if got := issueSLAIndicator(now.Add(2*time.Hour).Format(time.RFC3339), "resolved", now, identity); got != nil {
+		t.Error("closed issue should not show an SLA indicator")
+	}
+}
+
+func TestParseIssueListFiltersSort(t *testing.T) {
+	for input, want := range map[string]string{
+		"":         "",
+		"newest":   "",
+		"oldest":   issueSortOldest,
+		"priority": issueSortPriority,
+		"sla":      issueSortSLA,
+		"bogus":    "",
+	} {
+		got := parseIssueListFilters(url.Values{"sort": {input}}).Sort
+		if got != want {
+			t.Errorf("sort %q = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestIssueListPageQuerySort(t *testing.T) {
+	newest := issueListPageQuery(nil, issueSortNewest, 1, 25)
+	if !strings.Contains(newest, "ORDER BY id DESC") {
+		t.Errorf("newest query = %q", newest)
+	}
+	oldest := issueListPageQuery(nil, issueSortOldest, 2, 25)
+	if !strings.Contains(oldest, "ORDER BY id ASC") || !strings.Contains(oldest, "OFFSET 25 ROWS") {
+		t.Errorf("oldest query = %q", oldest)
+	}
+}
+
+func TestIssueListFilterBarNoAutoSubmit(t *testing.T) {
+	identity := func(key string, args ...any) string { return key }
+	body := renderIssueH(t, issueListFilterBar(IssueListFilters{Search: "pump", Sort: issueSortPriority}, map[string]int{}, identity))
+	if strings.Contains(body, "onchange") {
+		t.Error("filter bar must not auto-submit without JavaScript")
+	}
+	for _, want := range []string{"issues.filter.apply", "issues.filter.active", "sort=priority"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in the filter bar", want)
+		}
+	}
+}
+
+func TestIssueListBuckets(t *testing.T) {
+	priority := issueListBuckets(issueSortPriority)
+	if len(priority) != 5 || !strings.Contains(priority[0].Where, "critical") {
+		t.Errorf("unexpected priority buckets: %#v", priority)
+	}
+	sla := issueListBuckets(issueSortSLA)
+	if len(sla) != 3 || !strings.Contains(sla[0].Order, "sla_resolution_deadline ASC") {
+		t.Errorf("unexpected SLA buckets: %#v", sla)
+	}
+	if got := issueListBuckets(issueSortNewest); got != nil {
+		t.Errorf("newest should not use buckets: %#v", got)
 	}
 }
 
