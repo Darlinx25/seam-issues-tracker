@@ -14,6 +14,9 @@ package ui
 //	created_at      RFC3339 UTC
 //	created_by      user id of the operator who generated it
 //	revoked_at      RFC3339 UTC, empty until revoked
+//	qr_blob_key     xolu blob holding the rendered image (empty: no image yet)
+//	qr_content      the URL the image encodes (audit: which host it was made for)
+//	qr_format       stored image format ("svg")
 //
 // An asset has at most one ACTIVE code: generating is refused while one is
 // live and the card offers regeneration instead. Regeneration revokes the old
@@ -67,6 +70,15 @@ type issueQRCode struct {
 	CreatedAt     string
 	CreatedBy     int64
 	RevokedAt     string
+	// QRBlobKey is the xolu blob holding the rendered image; empty when the
+	// renderer was down or unconfigured at generation time. The code is
+	// valid either way -- the image is a convenience, not the link.
+	QRBlobKey string
+	// QRContent is the URL that was encoded, kept for the audit trail: it
+	// shows which public host a printed label was made for.
+	QRContent string
+	// QRFormat is the stored image format ("svg" today).
+	QRFormat string
 }
 
 // issueQRCardData is what the card fragment needs to render.
@@ -75,6 +87,12 @@ type issueQRCardData struct {
 	Active      *issueQRCode
 	LastRevoked *issueQRCode
 	CanManage   bool
+	// PublicLink is the absolute URL the QR encodes when a public prefix is
+	// configured, the in-app /s/{code} otherwise. Shown and copied.
+	PublicLink string
+	// RendererEnabled reports whether an image renderer is configured, so
+	// the card only offers "Retry image" where retrying can actually work.
+	RendererEnabled bool
 	// CSRFToken travels inside the fragment. The layout's csrf-token meta tag
 	// is empty on the asset detail page (the page data never carries a token),
 	// so htmx has nothing to send and every mutation from the card would be
@@ -144,6 +162,9 @@ func issueQRCodeFromRow(row map[string]any) issueQRCode {
 		CreatedAt:     toString(row["created_at"]),
 		CreatedBy:     toInt64(row["created_by"]),
 		RevokedAt:     toString(row["revoked_at"]),
+		QRBlobKey:     toString(row["qr_blob_key"]),
+		QRContent:     toString(row["qr_content"]),
+		QRFormat:      toString(row["qr_format"]),
 	}
 }
 
@@ -280,6 +301,18 @@ func (h *UIHandler) createIssueQRCode(ctx context.Context, assetID, createdBy in
 		}
 		if created != nil {
 			out.ID = created.ID
+		}
+		// The row exists from here on: the code is usable even if the image
+		// below cannot be produced. Best-effort, never fatal (a renderer
+		// outage must not close the reporting channel).
+		if out.ID > 0 && h.issueQRImageRendererEnabled() {
+			rendered, err := h.attachIssueQRImage(ctx, out)
+			if err != nil {
+				h.logger.Warn("issue qr image could not be rendered",
+					"asset", assetID, "code", code, "error", err)
+			} else {
+				out = rendered
+			}
 		}
 		return out, nil
 	}
@@ -491,10 +524,11 @@ func (h *UIHandler) activeIssueQRCode(ctx context.Context, assetID int64) (*issu
 func (h *UIHandler) renderAssetQRCard(w http.ResponseWriter, r *http.Request, assetID int64, errorKey string) {
 	t := h.translateFunc(r)
 	data := issueQRCardData{
-		AssetID:   assetID,
-		CanManage: h.canManageAssetQRCodes(r),
-		CSRFToken: h.GetCSRFToken(w, r),
-		ErrorKey:  errorKey,
+		AssetID:         assetID,
+		CanManage:       h.canManageAssetQRCodes(r),
+		CSRFToken:       h.GetCSRFToken(w, r),
+		ErrorKey:        errorKey,
+		RendererEnabled: h.issueQRImageRendererEnabled(),
 	}
 	codes, err := h.issueQRCodesForAsset(r.Context(), assetID)
 	if err != nil {
@@ -504,6 +538,9 @@ func (h *UIHandler) renderAssetQRCard(w http.ResponseWriter, r *http.Request, as
 		}
 	} else {
 		data.Active, data.LastRevoked = latestIssueQRCodes(codes)
+	}
+	if data.Active != nil {
+		data.PublicLink = h.issueQRImageContent(data.Active.Code)
 	}
 	_ = h.page.RenderPartial(w, issueQRCodeCard(data, t))
 }
@@ -557,13 +594,24 @@ func issueQRCodeCard(data issueQRCardData, t func(key string, args ...any) strin
 // copy button and, for managers, regenerate and revoke.
 func issueQRCodeActiveContent(data issueQRCardData, t func(key string, args ...any) string) mi.H {
 	code := data.Active
-	link := issueQRCodePrefix + code.Code
+	link := data.PublicLink
+	if link == "" {
+		link = issueQRCodePrefix + code.Code
+	}
 	return func(b *mi.Builder) mi.Node {
 		children := []interface{}{
 			b.Div(mi.Class("flex items-center justify-between gap-2"),
 				Badge(t("issue_qr.active"), "success")(b),
 				b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400"), code.CreatedAt),
 			),
+		}
+		// The printed image and the link are the two halves of the same
+		// thing: show the image when it exists, and when a renderer is
+		// configured but produced nothing, say so and offer the retry.
+		if code.QRBlobKey != "" || data.RendererEnabled {
+			children = append(children, issueQRImageBlock(data, *code, t)(b))
+		}
+		children = append(children,
 			b.A(
 				mi.Href(link),
 				mi.Target("_blank"),
@@ -579,7 +627,7 @@ func issueQRCodeActiveContent(data issueQRCardData, t func(key string, args ...a
 			b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"),
 				t("issue_qr.category")+": "+t("issues.category."+code.AssetCategory),
 			),
-		}
+		)
 		if data.CanManage {
 			children = append(children,
 				b.Div(mi.Class("flex flex-wrap items-center gap-2"),
@@ -675,9 +723,14 @@ func jsQuote(s string) string {
 	return sb.String()
 }
 
-// issueQRCodeCopyScript copies the absolute link, so pasting it in a chat or a
-// ticket works from any host the app happens to run on.
+// issueQRCodeCopyScript copies the link the operator needs to paste into a chat
+// or a ticket. With a public prefix configured the link is already absolute (the
+// same URL the QR encodes); otherwise the browser origin is prepended so the
+// pasted link never points at "/s/{code}" on someone else's machine.
 func issueQRCodeCopyScript(link string) string {
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		return "Seam.Utils.copyToClipboard(" + jsQuote(link) + ")"
+	}
 	return "Seam.Utils.copyToClipboard(window.location.origin+" + jsQuote(link) + ")"
 }
 

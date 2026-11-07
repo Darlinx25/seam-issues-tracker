@@ -135,14 +135,21 @@ else
     echo "  go.mod looks clean, skipping fix"
 fi
 
-# Step 6: Register the routes, wire the per-asset QR card, merge the issues
-# translation keys
+# Step 6: Register the routes, wire the per-asset QR card and its image
+# settings, merge the issues translation keys
 echo "[6/7] Registering routes, wiring the QR card and merging locales..."
 if [ -f "$OUTPUT_DIR/internal/ui/router.go" ] && [ -f "$SCRIPT_DIR/fix_router.py" ]; then
     python3 "$SCRIPT_DIR/fix_router.py" "$OUTPUT_DIR/internal/ui/router.go"
 fi
 if [ -f "$SCRIPT_DIR/fix_issue_qr.py" ]; then
     python3 "$SCRIPT_DIR/fix_issue_qr.py" "$OUTPUT_DIR/internal/ui/asset_detail.go" "$OUTPUT_DIR/internal/ui/routes.go"
+fi
+if [ -f "$SCRIPT_DIR/fix_qr_config.py" ]; then
+    python3 "$SCRIPT_DIR/fix_qr_config.py" \
+        "$OUTPUT_DIR/internal/config/config.go" \
+        "$OUTPUT_DIR/internal/ui/layout.go" \
+        "$OUTPUT_DIR/internal/server/server.go" \
+        "$OUTPUT_DIR/config.example.json"
 fi
 if [ -f "$SCRIPT_DIR/merge_locales.py" ]; then
     for L in en es pt ja; do

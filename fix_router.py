@@ -31,6 +31,8 @@ ASSET_DETAIL_ROUTE = '\tmux.HandleFunc("GET /assets/{id}", r.requireAuth(r.handl
 
 QR_ROUTES = [
     '\tmux.HandleFunc("GET /assets/{id}/qr/card", r.requireAuth(r.handler.AssetQRCodeCard))',
+    '\tmux.HandleFunc("GET /assets/{id}/qr/image", r.requireAuth(r.handler.AssetQRCodeImage))',
+    '\tmux.HandleFunc("POST /assets/{id}/qr/image", r.requirePerm(auth.PermAssetsAssetEdit, r.handler.AssetQRCodeRenderImage))',
     '\tmux.HandleFunc("POST /assets/{id}/qr/generate", r.requirePerm(auth.PermAssetsAssetEdit, r.handler.AssetQRCodeGenerate))',
     '\tmux.HandleFunc("POST /assets/{id}/qr/regenerate", r.requirePerm(auth.PermAssetsAssetEdit, r.handler.AssetQRCodeRegenerate))',
     '\tmux.HandleFunc("POST /assets/{id}/qr/revoke", r.requirePerm(auth.PermAssetsAssetEdit, r.handler.AssetQRCodeRevoke))',
@@ -99,7 +101,7 @@ def patch_asset_qr_routes(path):
         end = len(s)
 
     block = s[start:end]
-    if '/assets/{id}/qr/card' in block:
+    if '/assets/{id}/qr/image' in block:
         print("  router: asset QR routes already present")
         return
 
