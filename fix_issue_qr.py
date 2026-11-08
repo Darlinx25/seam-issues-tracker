@@ -9,8 +9,8 @@ the merge rewrites them in place:
   internal/ui/routes.go        QRScan resolves issue_qr_codes first, so the
                                codes generated from the asset detail work, and
                                a revoked code gets its own public message; the
-                               public page is then rendered by the read-only
-                               landing (no dead buttons, no dead-end link).
+                               public page is then the anonymous report form,
+                               with the category frozen into the code.
 
 Idempotent: each hook is skipped once it is already present. If neither the
 original text nor the hook is found, the merge fails loudly instead of
@@ -59,22 +59,38 @@ ROUTES_NEW = [
     '\t}',
 ]
 
-ROUTES_RENDER_OLD = '\th.page.RenderPublic(w, data.AssetName, QRScanPage(data, t))'
+# Two shapes of the render tail exist in the wild and both mean the same thing
+# ("hand the scan data to the old landing"), so the hook accepts either:
+#   - a pristine release: the landing lives in pages.go and the call is one line;
+#   - a tree that already went through the earlier read-only landing patch.
+ROUTES_RENDER_CANDIDATES = [
+    [
+        '\th.page.RenderPublic(w, data.AssetName, QRScanPage(data, t))',
+    ],
+    [
+        '\t// The public landing is read-only until the QR reporting channel is',
+        '\t// implemented: no dead action buttons. The full-detail link only makes',
+        '\t// sense for a viewer allowed to open the authenticated asset page;',
+        '\t// anonymous scanners get a sign-in link back to the asset instead.',
+        '\tcanViewDetails := false',
+        '\tif h.sessionManager != nil {',
+        '\t\tif session, err := h.sessionManager.ValidateSession(r); err == nil {',
+        '\t\t\tcanViewDetails = auth.HasPermission(session.Role, auth.PermAssetsAssetView)',
+        '\t\t}',
+        '\t}',
+        '\tassetCategory := assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))',
+        '',
+        '\th.page.RenderPublic(w, data.AssetName, issueQRScanPage(data, assetCategory, canViewDetails, t))',
+    ],
+]
 
 ROUTES_RENDER_NEW = [
-    '\t// The public landing is read-only until the QR reporting channel is',
-    '\t// implemented: no dead action buttons. The full-detail link only makes',
-    '\t// sense for a viewer allowed to open the authenticated asset page;',
-    '\t// anonymous scanners get a sign-in link back to the asset instead.',
-    '\tcanViewDetails := false',
-    '\tif h.sessionManager != nil {',
-    '\t\tif session, err := h.sessionManager.ValidateSession(r); err == nil {',
-    '\t\t\tcanViewDetails = auth.HasPermission(session.Role, auth.PermAssetsAssetView)',
-    '\t\t}',
-    '\t}',
-    '\tassetCategory := assetCategoryFromStoredCriticality(toString(asset.Data["criticality"]))',
+    '\t// The landing is the anonymous report form. The category is the one',
+    '\t// frozen into the code; only a legacy qr_codes row (which carries none)',
+    '\t// falls back to the asset.',
+    '\tassetCategory := h.issueQRCodeCategory(ctx, code, asset)',
     '',
-    '\th.page.RenderPublic(w, data.AssetName, issueQRScanPage(data, assetCategory, canViewDetails, t))',
+    '\th.RenderIssueQRReportLanding(w, r, data, assetCategory)',
 ]
 
 
@@ -122,17 +138,19 @@ def patch_routes_scan(path):
 
 def patch_routes_landing(path):
     s = _read(path)
-    if 'issueQRScanPage' in s:
-        print("  routes: QRScan already renders the read-only landing")
+    if 'RenderIssueQRReportLanding' in s:
+        print("  routes: QRScan already renders the report form")
         return True
     nl = _newline(s)
-    old = ROUTES_RENDER_OLD + nl
-    if old not in s:
-        print("  routes: QRScan render anchor not found", file=sys.stderr)
-        return False
-    _write(path, s.replace(old, nl.join(ROUTES_RENDER_NEW) + nl, 1))
-    print("  routes: QRScan renders the read-only landing")
-    return True
+    for candidate in ROUTES_RENDER_CANDIDATES:
+        old = nl.join(candidate) + nl
+        if old in s:
+            _write(path, s.replace(old, nl.join(ROUTES_RENDER_NEW) + nl, 1))
+            print("  routes: QRScan renders the anonymous report form")
+            return True
+    print("  routes: QRScan render anchor not found (expected either the "
+          "pristine QRScanPage tail or the read-only landing tail)", file=sys.stderr)
+    return False
 
 
 def main(asset_detail_path, routes_path):

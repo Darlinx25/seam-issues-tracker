@@ -394,6 +394,85 @@ _QR_KEYS = {
     },
 }
 
+_QR_REPORT_KEYS = {
+    'en': {
+        'qr.report.title': 'Report an issue',
+        'qr.report.anonymous_note': 'No sign-in needed',
+        'qr.report.contact_title': 'Your contact details',
+        'qr.report.contact_name': 'Full name',
+        'qr.report.contact_document': 'ID number',
+        'qr.report.contact_phone': 'Phone',
+        'qr.report.contact_email': 'Email',
+        'qr.report.problem_title': 'Describe the problem',
+        'qr.report.field_title': 'Title',
+        'qr.report.field_description': 'Description',
+        'qr.report.submit': 'Send report',
+        'qr.report.error.contact_required': 'Fill in this field so we can reach you',
+        'qr.report.error.description_required': 'Describe the problem',
+        'qr.report.error.create_failed': 'The report could not be created. Please try again.',
+        'qr.report.done_title': 'Report received',
+        'qr.report.done_message': 'Your report was sent.',
+        'qr.report.done_hint': 'The maintenance team will contact you using the details you provided.',
+    },
+    'es': {
+        'qr.report.title': 'Reportar una incidencia',
+        'qr.report.anonymous_note': 'No necesitas iniciar sesión',
+        'qr.report.contact_title': 'Tus datos de contacto',
+        'qr.report.contact_name': 'Nombre completo',
+        'qr.report.contact_document': 'Documento',
+        'qr.report.contact_phone': 'Teléfono',
+        'qr.report.contact_email': 'Email',
+        'qr.report.problem_title': 'Describe el problema',
+        'qr.report.field_title': 'Título',
+        'qr.report.field_description': 'Descripción',
+        'qr.report.submit': 'Enviar reporte',
+        'qr.report.error.contact_required': 'Completa este dato para que podamos contactarte',
+        'qr.report.error.description_required': 'Describe el problema',
+        'qr.report.error.create_failed': 'No se pudo crear el reporte. Inténtalo de nuevo.',
+        'qr.report.done_title': 'Reporte recibido',
+        'qr.report.done_message': 'Tu reporte fue enviado.',
+        'qr.report.done_hint': 'El equipo de mantenimiento te contactará con los datos que proporcionaste.',
+    },
+    'pt': {
+        'qr.report.title': 'Reportar um problema',
+        'qr.report.anonymous_note': 'Não precisa iniciar sessão',
+        'qr.report.contact_title': 'Seus dados de contato',
+        'qr.report.contact_name': 'Nome completo',
+        'qr.report.contact_document': 'Documento',
+        'qr.report.contact_phone': 'Telefone',
+        'qr.report.contact_email': 'Email',
+        'qr.report.problem_title': 'Descreva o problema',
+        'qr.report.field_title': 'Título',
+        'qr.report.field_description': 'Descrição',
+        'qr.report.submit': 'Enviar relato',
+        'qr.report.error.contact_required': 'Preencha este dado para que possamos falar com você',
+        'qr.report.error.description_required': 'Descreva o problema',
+        'qr.report.error.create_failed': 'Não foi possível criar o relato. Tente novamente.',
+        'qr.report.done_title': 'Relato recebido',
+        'qr.report.done_message': 'Seu relato foi enviado.',
+        'qr.report.done_hint': 'A equipe de manutenção entrará em contato usando os dados fornecidos.',
+    },
+    'ja': {
+        'qr.report.title': '問題を報告',
+        'qr.report.anonymous_note': 'ログインは不要です',
+        'qr.report.contact_title': '連絡先',
+        'qr.report.contact_name': '氏名',
+        'qr.report.contact_document': '書類番号',
+        'qr.report.contact_phone': '電話番号',
+        'qr.report.contact_email': 'メールアドレス',
+        'qr.report.problem_title': '問題の内容',
+        'qr.report.field_title': 'タイトル',
+        'qr.report.field_description': '詳細',
+        'qr.report.submit': '報告を送信',
+        'qr.report.error.contact_required': 'ご連絡先のため入力してください',
+        'qr.report.error.description_required': '問題の内容を入力してください',
+        'qr.report.error.create_failed': '報告を作成できませんでした。もう一度お試しください。',
+        'qr.report.done_title': '報告を受け付けました',
+        'qr.report.done_message': '報告を送信しました。',
+        'qr.report.done_hint': 'ご入力いただいた連絡先に保守チームからご連絡します。',
+    },
+}
+
 # Create-issue form: the form engine resolves enum labels through
 # "<form>.<field>.<value>" (singular "issue"), while the list/detail keep
 # using "issues.priority.*". The SLA card is one exact value, so these are
@@ -479,6 +558,9 @@ for _k in (
 ):
     d.pop(_k, None)
 for _k, _v in _QR_KEYS.get(L, {}).items():
+    d.setdefault(_k, _v)
+
+for _k, _v in _QR_REPORT_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
 
 with open(p, 'w', encoding='utf-8') as f:

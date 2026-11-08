@@ -2,126 +2,218 @@ package ui
 
 // Public landing for the links encoded in the per-asset QR codes (/s/{code}).
 //
-// Iteration 1 keeps this page read-only: the QR reporting channel (anonymous
-// report form, check-in, suggested work orders) is iteration 2/3, so the page
-// shows only what a person standing in front of the equipment needs to see -
-// what the asset is, where it is, who is responsible for it and its category.
+// The landing IS the anonymous report form: the scanner sees which asset the
+// code belongs to (name, type, location and the category frozen into the code)
+// and fills in their contact details plus the problem description. The form
+// posts to /s/{code}/report, which creates the issue with channel "qr" and no
+// reported_by, so a person without a Seam account can report a fault.
 //
-// The original page shipped two action buttons ("Check In", "Report Issue")
-// with no handler behind them, and a "View full details" link to the
-// authenticated asset page that sent anonymous scanners to the login screen.
-// Neither is acceptable on a public page: the dead buttons are replaced by an
-// explicit note, and the detail link is only rendered for viewers who can
-// actually open it.
+// Priority and severity are not asked on this channel: triage is the operator's
+// call, not the reporter's, so the report uses the same defaults as the in-app
+// form (medium / minor).
+//
+// The fields of the template assigned to the asset's type are rendered by the
+// server: PublicLayout carries no HTMX, so there is no partial to swap them in
+// after the fact. They travel inside the same form as the fixed fields.
 
 import (
-	"fmt"
-
 	mi "github.com/ha1tch/minty"
 )
 
-// issueQRScanPage renders the landing a scanned code opens. assetCategory is
-// the canonical category of the asset ("critico"/"normal"); canViewDetails is
-// true only when the request carries a session allowed to open the asset
-// detail page.
-func issueQRScanPage(data QRScanData, assetCategory string, canViewDetails bool, t func(key string, args ...any) string) mi.H {
+// issueQRReportInputClass is the input look shared by every field of the form.
+const issueQRReportInputClass = "mt-1 w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500"
+
+// issueQRReportPageData is everything the anonymous report form renders.
+//
+// The values survive a rejected submission so the scanner never retypes the
+// report, and Errors is keyed by field name ("title", "description",
+// "contact_email", a template field key, ...) so each message lands under its
+// own field.
+type issueQRReportPageData struct {
+	Code      string
+	AssetName string
+	AssetType string
+
+	// AssetLocation is the free-text location stored on the asset, already
+	// denormalized the way the asset detail reads it.
+	AssetLocation string
+
+	// AssetCategory is the canonical category of the asset ("critico" or
+	// "normal"), frozen into the code when the QR was printed.
+	AssetCategory string
+
+	ContactName     string
+	ContactDocument string
+	ContactPhone    string
+	ContactEmail    string
+	Title           string
+	Description     string
+
+	// TemplateFields is the rendered block of the template assigned to the
+	// asset's type, or nil when no template applies.
+	TemplateFields mi.H
+
+	Errors map[string]string
+}
+
+// issueQRReportPage renders the anonymous report form a scanned code opens.
+func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...any) string) mi.H {
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
 	}
 	return func(b *mi.Builder) mi.Node {
-		statusColor := "bg-green-500"
-		statusText := t("asset.status.active")
-		switch data.Status {
-		case "alert":
-			statusColor = "bg-red-500"
-			statusText = t("asset.status.alert")
-		case "silent":
-			statusColor = "bg-yellow-500"
-			statusText = t("asset.status.silent")
-		case "lost":
-			statusColor = "bg-gray-500"
-			statusText = t("asset.status.lost")
-		case "maintenance":
-			statusColor = "bg-blue-500"
-			statusText = t("dashboard.status.maintenance")
-		default:
-			statusText = data.Status
+		// A legacy code carries no category and the landing falls back to the
+		// asset; a payload without either still has to render a known badge.
+		category := data.AssetCategory
+		if category != "critico" && category != "normal" {
+			category = "normal"
+		}
+		categoryVariant := "info"
+		if category == "critico" {
+			categoryVariant = "danger"
 		}
 
-		categoryLabel := ""
-		if assetCategory != "" {
-			categoryLabel = t("issues.asset.category." + assetCategory)
-		}
-
-		// Footer: the asset detail page is authenticated, so the link only
-		// makes sense for a viewer who can open it. Anonymous scanners get a
-		// sign-in link that brings them back here instead of a silent 302 to
-		// the login page.
-		var footer mi.H
-		if canViewDetails {
-			footer = func(b *mi.Builder) mi.Node {
-				return b.Div(mi.Class("text-center"),
-					b.A(
-						mi.Href(fmt.Sprintf("/assets/%d", data.AssetID)),
-						mi.Class("text-sm text-indigo-600 dark:text-indigo-400 hover:underline"),
-						t("qr.view_full_details"),
-					),
-				)
+		assetSubtitle := data.AssetType
+		if data.AssetLocation != "" {
+			if assetSubtitle != "" {
+				assetSubtitle += " · "
 			}
-		} else {
-			footer = func(b *mi.Builder) mi.Node {
-				return b.Div(mi.Class("text-center"),
-					b.A(
-						mi.Href(fmt.Sprintf("/login?next=/assets/%d", data.AssetID)),
-						mi.Class("text-sm text-indigo-600 dark:text-indigo-400 hover:underline"),
-						t("qr.sign_in_for_details"),
-					),
-				)
-			}
+			assetSubtitle += data.AssetLocation
 		}
 
-		children := []interface{}{
-			// Asset card
-			b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-hidden"),
-				// Status bar
-				b.Div(mi.Class("h-2 "+statusColor)),
+		problemFields := []interface{}{
+			issueQRReportTextInput(b, "title", t("qr.report.field_title"), "text", data.Title, data.Errors["title"]),
+			issueQRReportTextarea(b, "description", t("qr.report.field_description"), data.Description, data.Errors["description"]),
+		}
+		if data.TemplateFields != nil {
+			problemFields = append(problemFields, data.TemplateFields(b))
+		}
 
-				b.Div(mi.Class("p-6"),
-					// Header
-					b.Div(mi.Class("flex items-start justify-between mb-4"),
-						b.Div(
-							b.H1(mi.Class("text-2xl font-bold text-gray-900 dark:text-white"), data.AssetName),
-							b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), data.AssetType),
+		return b.Div(mi.Class("space-y-4"),
+			// Heading: the scanner is told up front that the report is
+			// anonymous, so nobody abandons the form looking for a login.
+			b.Div(mi.Class("text-center"),
+				b.H1(mi.Class("text-xl font-bold text-gray-900 dark:text-white"), t("qr.report.title")),
+				b.P(mi.Class("mt-1 text-sm text-gray-500 dark:text-gray-400"), t("qr.report.anonymous_note")),
+			),
+
+			// Asset card: the scanner confirms the code belongs to the
+			// equipment in front of them before writing anything.
+			Card("", func(b *mi.Builder) mi.Node {
+				return b.Div(mi.Class("flex items-start gap-3"),
+					b.Div(mi.Class("w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-900/50 flex items-center justify-center flex-shrink-0"),
+						b.Span(mi.Class("material-icons text-indigo-600 dark:text-indigo-400"), "engineering"),
+					),
+					b.Div(mi.Class("min-w-0"),
+						b.Div(mi.Class("font-medium text-gray-900 dark:text-white"), data.AssetName),
+						b.Div(mi.Class("text-sm text-gray-500 dark:text-gray-400"), assetSubtitle),
+						b.Div(mi.Class("mt-2 flex flex-wrap gap-2"),
+							Badge(t("issues.asset.category."+category), categoryVariant)(b),
+							// The channel label and token the filter bar already
+							// use, not a second word for the same concept.
+							Badge(t("issues.filter.channel")+": "+t("issues.channel.qr"), "info")(b),
 						),
-						b.Div(mi.Class("px-3 py-1 rounded-full text-sm font-medium text-white "+statusColor), statusText),
 					),
+				)
+			})(b),
 
-					// Details grid
-					b.Div(mi.Class("grid grid-cols-2 gap-4 mb-6"),
-						qrDetailItem(b, t("qr.field.location"), data.Location, "location_on"),
-						qrDetailItem(b, t("sensors.column.last_seen"), data.LastSeen, "schedule"),
-						qrDetailItem(b, t("qr.field.assigned_to"), data.AssignedTo, "person"),
-						qrDetailItem(b, t("issues.asset.category"), categoryLabel, "category"),
-						qrDetailItem(b, t("qr.field.code"), data.Code, "qr_code_2"),
-					),
-
-					// Recent activity
-					b.Div(mi.Class("border-t border-gray-200 dark:border-gray-700 pt-4"),
-						b.H3(mi.Class("text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"), t("qr.recent_activity")),
-						qrActivityList(b, data.RecentActivity, t),
-					),
+			// One form: the two cards and the submit travel together, so the
+			// scanner answers everything and sends once.
+			b.Form(mi.Method("POST"), mi.Action("/s/"+data.Code+"/report"), mi.Class("space-y-4"),
+				Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
+					return b.Div(mi.Class("space-y-4"),
+						issueQRReportTextInput(b, "contact_name", t("qr.report.contact_name"), "text", data.ContactName, data.Errors["contact_name"]),
+						issueQRReportTextInput(b, "contact_document", t("qr.report.contact_document"), "text", data.ContactDocument, data.Errors["contact_document"]),
+						b.Div(mi.Class("grid grid-cols-1 sm:grid-cols-2 gap-4"),
+							issueQRReportTextInput(b, "contact_phone", t("qr.report.contact_phone"), "tel", data.ContactPhone, data.Errors["contact_phone"]),
+							issueQRReportTextInput(b, "contact_email", t("qr.report.contact_email"), "email", data.ContactEmail, data.Errors["contact_email"]),
+						),
+					)
+				})(b),
+				Card(t("qr.report.problem_title"), func(b *mi.Builder) mi.Node {
+					return b.Div(append([]interface{}{mi.Class("space-y-4")}, problemFields...)...)
+				})(b),
+				b.Button(mi.Type("submit"), mi.Class("w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+					t("qr.report.submit"),
 				),
 			),
-
-			// Read-only notice: the reporting channel is not available yet.
-			b.Div(mi.Class("flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"),
-				b.Span(mi.Class("material-icons text-indigo-500 dark:text-indigo-400"), "info"),
-				b.P(mi.Class("text-sm text-gray-600 dark:text-gray-300"), t("qr.read_only_note")),
-			),
-
-			footer(b),
-		}
-
-		return b.Div(append([]interface{}{mi.Class("space-y-6")}, children...)...)
+		)
 	}
+}
+
+// issueQRReportDonePage is the confirmation the POST redirects to. It carries
+// no issue id, no contact detail and no tracking link: the anonymous channel
+// must not hand out a handle on the record, and public tracking is out of this
+// iteration's scope.
+func issueQRReportDonePage(t func(key string, args ...any) string) mi.H {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
+	return func(b *mi.Builder) mi.Node {
+		return b.Div(mi.Class("space-y-4"),
+			b.Div(mi.Class("text-center"),
+				b.H1(mi.Class("text-xl font-bold text-gray-900 dark:text-white"), t("qr.report.done_title")),
+			),
+			b.Div(mi.Class("px-4 py-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3"),
+				b.Span(mi.Class("material-icons text-green-600 dark:text-green-400"), "check_circle"),
+				b.Div(mi.Class("min-w-0"),
+					b.Div(mi.Class("text-sm font-semibold text-green-800 dark:text-green-300"), t("qr.report.done_message")),
+					b.P(mi.Class("mt-1 text-sm text-gray-600 dark:text-gray-400"), t("qr.report.done_hint")),
+				),
+			),
+		)
+	}
+}
+
+// issueQRReportLabel renders one field label with the required marker every
+// field of this form carries.
+func issueQRReportLabel(b *mi.Builder, forID, text string) mi.Node {
+	return b.Label(mi.For(forID), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+		b.Text(text),
+		b.Span(mi.Class("text-red-500"), " *"),
+	)
+}
+
+// issueQRReportFieldError renders the inline error of one field, or nothing.
+func issueQRReportFieldError(b *mi.Builder, message string) mi.Node {
+	if message == "" {
+		// A text node, not an empty span: the page must not carry markup that
+		// has no content.
+		return b.Text("")
+	}
+	return b.P(mi.Class("mt-1 text-xs text-red-600 dark:text-red-400"), message)
+}
+
+// issueQRReportTextInput renders one labelled single-line input. inputType is
+// the HTML input type, so the browser enforces "required" and the email shape
+// before the form leaves the device; the handler validates them again.
+func issueQRReportTextInput(b *mi.Builder, name, label, inputType, value, errMsg string) mi.Node {
+	return b.Div(
+		issueQRReportLabel(b, name, label),
+		b.Input(
+			mi.Type(inputType),
+			mi.ID(name),
+			mi.Name(name),
+			mi.Value(value),
+			mi.Required(),
+			mi.Class(issueQRReportInputClass),
+		),
+		issueQRReportFieldError(b, errMsg),
+	)
+}
+
+// issueQRReportTextarea renders the labelled description field.
+func issueQRReportTextarea(b *mi.Builder, name, label, value, errMsg string) mi.Node {
+	return b.Div(
+		issueQRReportLabel(b, name, label),
+		b.Textarea(
+			mi.ID(name),
+			mi.Name(name),
+			mi.Rows(4),
+			mi.Required(),
+			mi.Class(issueQRReportInputClass),
+			b.Text(value),
+		),
+		issueQRReportFieldError(b, errMsg),
+	)
 }

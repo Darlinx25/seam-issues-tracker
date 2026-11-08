@@ -2,10 +2,12 @@ package ui
 
 // Tests for the public landing of the QR links (/s/{code}).
 //
-// The landing is the only public surface of the QR card, so these tests pin
-// what a scanner must and must not see: the asset facts (including the asset
-// category), an honest read-only notice instead of the dead action buttons the
-// base page shipped, and a full-detail link that respects authentication.
+// The landing is the only anonymous surface of the module and it is the report
+// form itself, so these tests pin what a scanner must see (the asset facts, the
+// category frozen into the code, the contact block and the problem
+// description), what the form must post to, and the two rules the card demands:
+// no authenticated detour and no dead code that claims the code stopped working
+// when it did not.
 
 import (
 	"bytes"
@@ -16,84 +18,161 @@ import (
 	mi "github.com/ha1tch/minty"
 )
 
-// qrLandingTestData is a fully populated scan payload, so a missing field is a
+// qrReportTestData is a fully populated form payload, so a missing field is a
 // rendering bug and not a fixture gap.
-func qrLandingTestData() QRScanData {
-	return QRScanData{
-		Code:           "AAAAAAAAAAAAAAAA",
-		AssetID:        7,
-		AssetName:      "Pump 7",
-		AssetType:      "Centrifugal pump",
-		Status:         "active",
-		Location:       "Plant A",
-		LastSeen:       "2026-01-01 10:00",
-		AssignedTo:     "Ana",
-		RecentActivity: []string{"qr_scan - 2026-01-01 10:00"},
+func qrReportTestData() issueQRReportPageData {
+	return issueQRReportPageData{
+		Code:            "AAAAAAAAAAAAAAAA",
+		AssetName:       "Pump 7",
+		AssetType:       "Centrifugal pump",
+		AssetLocation:   "Plant A",
+		AssetCategory:   "critico",
+		ContactName:     "Carolina",
+		ContactDocument: "4.512.873-6",
+		ContactPhone:    "099 123 456",
+		ContactEmail:    "carolina@correo.com",
+		Title:           "Oil leak",
+		Description:     "Oil under the pump.",
 	}
 }
 
-// renderQRLanding renders the page with the raw locale keys, the same way the
-// test handlers run (the translator is nil there).
-func renderQRLanding(t *testing.T, data QRScanData, category string, canViewDetails bool) string {
+// renderQRReportPage renders the form with the raw locale keys, the same way
+// the test handlers run (the translator is nil there).
+func renderQRReportPage(t *testing.T, data issueQRReportPageData) string {
 	t.Helper()
-	page := issueQRScanPage(data, category, canViewDetails, func(key string, args ...any) string { return key })
+	page := issueQRReportPage(data, func(key string, args ...any) string { return key })
 	var buf bytes.Buffer
 	b := &mi.Builder{}
 	if err := page(b).Render(&buf); err != nil {
-		t.Fatalf("could not render the landing page: %v", err)
+		t.Fatalf("could not render the report form: %v", err)
 	}
 	return buf.String()
 }
 
-// TestIssueQRScanPage_ShowsFactsAndNoDeadActions covers the content of the
-// read-only landing: the asset facts, the category, and no sign of the two
-// buttons that used to do nothing.
-func TestIssueQRScanPage_ShowsFactsAndNoDeadActions(t *testing.T) {
-	body := renderQRLanding(t, qrLandingTestData(), "critico", true)
+// TestIssueQRReportPage_ShowsAssetAndForm covers the card's content: the asset
+// the code belongs to, the category frozen into the code, the channel badge and
+// every field of the anonymous report.
+func TestIssueQRReportPage_ShowsAssetAndForm(t *testing.T) {
+	body := renderQRReportPage(t, qrReportTestData())
 
 	for _, want := range []string{
+		// Asset card
 		"Pump 7",
 		"Centrifugal pump",
 		"Plant A",
-		"AAAAAAAAAAAAAAAA",
-		"issues.asset.category",
 		"issues.asset.category.critico",
-		"qr.read_only_note",
-		`href="/assets/7"`,
+		"issues.channel.qr",
+		// The form itself
+		`action="/s/AAAAAAAAAAAAAAAA/report"`,
+		`method="POST"`,
+		`name="contact_name"`,
+		`name="contact_document"`,
+		`name="contact_phone"`,
+		`name="contact_email"`,
+		`name="title"`,
+		`name="description"`,
+		"qr.report.contact_title",
+		"qr.report.problem_title",
+		"qr.report.submit",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the landing must show %q, body did not contain it", want)
+			t.Errorf("the report form must show %q, body did not contain it", want)
 		}
 	}
+	if !strings.Contains(body, `type="email"`) {
+		t.Error("the email field must be an email input, so the browser checks the shape first")
+	}
+	if strings.Count(body, "required") < 6 {
+		t.Errorf("every field of the anonymous form is required, body carried %d required attributes", strings.Count(body, "required"))
+	}
+}
 
-	for _, dead := range []string{"qr.check_in", "qr.report_issue", "check_circle", "report_problem"} {
-		if strings.Contains(body, dead) {
-			t.Errorf("the dead action button %q must not be rendered", dead)
+// TestIssueQRReportPage_IsAnonymous pins the point of the channel: nothing on
+// the page sends the scanner through a login or back to the in-app form.
+func TestIssueQRReportPage_IsAnonymous(t *testing.T) {
+	body := renderQRReportPage(t, qrReportTestData())
+
+	for _, unwanted := range []string{
+		"/issues/new",
+		"/login",
+		`href="#report"`,
+		"qr.sign_in_for_details",
+		"qr.view_full_details",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the anonymous form must not carry %q", unwanted)
+		}
+	}
+	if !strings.Contains(body, "qr.report.anonymous_note") {
+		t.Error("the page must say that no sign-in is needed")
+	}
+}
+
+// TestIssueQRReportPage_PrefillsValuesAndErrors covers a rejected submission:
+// the answers survive and each error lands under its own field.
+func TestIssueQRReportPage_PrefillsValuesAndErrors(t *testing.T) {
+	data := qrReportTestData()
+	data.Title = "Oil leak"
+	data.ContactEmail = "broken"
+	data.Errors = map[string]string{
+		"contact_email": "error.invalid_email",
+		"description":   "qr.report.error.description_required",
+	}
+	body := renderQRReportPage(t, data)
+
+	if !strings.Contains(body, `value="Oil leak"`) || !strings.Contains(body, `value="broken"`) {
+		t.Error("a rejected report must keep what the scanner typed")
+	}
+	if !strings.Contains(body, "error.invalid_email") {
+		t.Error("the email error must be rendered next to the field")
+	}
+	if !strings.Contains(body, "qr.report.error.description_required") {
+		t.Error("the description error must be rendered next to the field")
+	}
+}
+
+// TestIssueQRReportPage_RendersTemplateFields covers the server-rendered
+// template block: PublicLayout carries no HTMX, so the fields of the template
+// assigned to the asset's type arrive inside the same form.
+func TestIssueQRReportPage_RendersTemplateFields(t *testing.T) {
+	data := qrReportTestData()
+	data.TemplateFields = func(b *mi.Builder) mi.Node {
+		return b.Input(mi.Name("serial_no"), mi.ID("field-serial_no"), mi.Type("text"))
+	}
+	body := renderQRReportPage(t, data)
+
+	if !strings.Contains(body, `name="serial_no"`) {
+		t.Error("the template fields must be part of the anonymous form")
+	}
+}
+
+// TestIssueQRReportDonePage_HasNoHandleOnTheRecord pins the confirmation: it
+// names no issue and repeats no contact detail, so a screenshot of it leaks
+// nothing and the channel hands out no tracking handle.
+func TestIssueQRReportDonePage_HasNoHandleOnTheRecord(t *testing.T) {
+	page := issueQRReportDonePage(func(key string, args ...any) string { return key })
+	var buf bytes.Buffer
+	b := &mi.Builder{}
+	if err := page(b).Render(&buf); err != nil {
+		t.Fatalf("could not render the confirmation: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{"qr.report.done_title", "qr.report.done_message", "qr.report.done_hint", "check_circle"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the confirmation must show %q, body did not contain it", want)
+		}
+	}
+	for _, unwanted := range []string{"carolina@correo.com", "/issues/", "/s/", "#"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the confirmation must not carry %q", unwanted)
 		}
 	}
 }
 
-// TestIssueQRScanPage_AnonymousGetsSignInLink covers the broken detail link:
-// the asset page is authenticated, so an anonymous scanner gets a sign-in link
-// that returns to the asset instead of a link that bounces to the login form.
-func TestIssueQRScanPage_AnonymousGetsSignInLink(t *testing.T) {
-	body := renderQRLanding(t, qrLandingTestData(), "normal", false)
-
-	if !strings.Contains(body, `href="/login?next=/assets/7"`) {
-		t.Error("an anonymous scanner must get a sign-in link back to the asset")
-	}
-	if !strings.Contains(body, "qr.sign_in_for_details") {
-		t.Error("the sign-in link must be labelled for the scanner")
-	}
-	if strings.Contains(body, `href="/assets/7"`) {
-		t.Error("an anonymous scanner must not be sent to the authenticated asset page")
-	}
-}
-
-// TestQRScanLanding_RendersReadOnlyForAnonymous drives the real handler: a live
-// new-style code resolves to its asset and the public page is the read-only
-// landing, with the category resolved from the stored criticality ("Alta").
-func TestQRScanLanding_RendersReadOnlyForAnonymous(t *testing.T) {
+// TestQRScanLanding_RendersReportForm drives the real handler: a live code
+// resolves to its asset and the public page is the anonymous form.
+func TestQRScanLanding_RendersReportForm(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"GET /api/v1/assets/5": func(w http.ResponseWriter, r *http.Request) {
 			qrTestJSON(w, map[string]any{
@@ -106,10 +185,103 @@ func TestQRScanLanding_RendersReadOnlyForAnonymous(t *testing.T) {
 		},
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
 			q := qrTestQuery(t, r)
+			if strings.Contains(q, "FROM issue_qr_codes") {
+				qrTestRows(w, []map[string]any{{
+					"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5),
+					"asset_category": "critico", "active": true,
+				}})
+				return
+			}
+			qrTestRows(w, nil)
+		},
+	})
+	defer server.Close()
+
+	h := newHandler(t, server)
+	rec := qrTestGet(t, h.QRScan, "/s/AAAAAAAAAAAAAAAA", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a live code must render the form, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Pump 5", "Pump", "Plant A", "issues.asset.category.critico",
+		`action="/s/AAAAAAAAAAAAAAAA/report"`,
+		`name="contact_email"`, `name="description"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the landing must show %q, body did not contain it", want)
+		}
+	}
+	for _, unwanted := range []string{"/issues/new", "/login", "qr.report_issue"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the anonymous landing must not carry %q", unwanted)
+		}
+	}
+}
+
+// TestQRScanLanding_CategoryComesFromTheCode is the point of the card: the
+// category is the one frozen into the code, not the asset's current criticality.
+func TestQRScanLanding_CategoryComesFromTheCode(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/assets/5": func(w http.ResponseWriter, r *http.Request) {
+			qrTestJSON(w, map[string]any{
+				"id": 5, "name": "Pump 5", "type_name": "Pump", "status": "active",
+				"location": "Plant A", "criticality": "Baja",
+			})
+		},
+		"POST /api/v1/events": func(w http.ResponseWriter, r *http.Request) {
+			oqlCreated(w, 1)
+		},
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			qrTestRows(w, []map[string]any{{
+				"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5),
+				"asset_category": "critico", "active": true,
+			}})
+		},
+	})
+	defer server.Close()
+
+	h := newHandler(t, server)
+	body := qrTestGet(t, h.QRScan, "/s/AAAAAAAAAAAAAAAA", "").Body.String()
+
+	if !strings.Contains(body, "issues.asset.category.critico") {
+		t.Error("the landing must show the category frozen into the code")
+	}
+	if strings.Contains(body, "issues.asset.category.normal") {
+		t.Error("the landing must not recompute the category from the asset")
+	}
+}
+
+// TestQRScanLanding_RendersTemplateFields covers the server-rendered template
+// on the real path: the fields of the template assigned to the asset's type are
+// already in the page, with no HTMX round trip behind them.
+func TestQRScanLanding_RendersTemplateFields(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/assets/5": func(w http.ResponseWriter, r *http.Request) {
+			qrTestJSON(w, map[string]any{
+				"id": 5, "name": "Pump 5", "type_name": "Pump",
+				"location": "Plant A", "criticality": "Alta", "type_id": float64(3),
+			})
+		},
+		"POST /api/v1/events": func(w http.ResponseWriter, r *http.Request) {
+			oqlCreated(w, 1)
+		},
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			q := qrTestQuery(t, r)
 			switch {
 			case strings.Contains(q, "FROM issue_qr_codes"):
 				qrTestRows(w, []map[string]any{{
-					"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5), "active": true,
+					"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5),
+					"asset_category": "critico", "active": true,
+				}})
+			case strings.Contains(q, "issue_template_assignments"):
+				qrTestRows(w, []map[string]any{{"template_key": "pump_failure"}})
+			case strings.Contains(q, "FROM issue_templates"):
+				qrTestRows(w, []map[string]any{{
+					"id": float64(5), "key": "pump_failure", "name": "Pump Failure",
+					"version": float64(1), "is_current": float64(1),
+					"fields": []any{map[string]any{"key": "serial_no", "label": "Serial No", "type": "text"}},
 				}})
 			default:
 				qrTestRows(w, nil)
@@ -122,34 +294,22 @@ func TestQRScanLanding_RendersReadOnlyForAnonymous(t *testing.T) {
 	rec := qrTestGet(t, h.QRScan, "/s/AAAAAAAAAAAAAAAA", "")
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("a live code must render the landing, got %d", rec.Code)
+		t.Fatalf("a live code must render the form, got %d", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Pump 5") {
-		t.Error("the landing must show the asset name")
-	}
-	if !strings.Contains(body, "qr.read_only_note") {
-		t.Error("the landing must explain that the page is read-only")
-	}
-	if !strings.Contains(body, "issues.asset.category.critico") {
-		t.Error("Alta must show up as the critical asset category")
-	}
-	if !strings.Contains(body, `href="/login?next=/assets/5"`) {
-		t.Error("the anonymous landing must offer the sign-in link")
-	}
-	if strings.Contains(body, "qr.check_in") || strings.Contains(body, "qr.report_issue") {
-		t.Error("the dead action buttons must not reach the public page")
+	if !strings.Contains(rec.Body.String(), `name="serial_no"`) {
+		t.Error("the template assigned to the asset type must render into the anonymous form")
 	}
 }
 
-// TestQRScanLanding_RevokedCodeReturnsGone wires the revoked-code contract
-// through the handler: the page explains the code was revoked instead of
-// looking like a broken link (410, not 404).
-func TestQRScanLanding_RevokedCodeReturnsGone(t *testing.T) {
+// TestQRScanLanding_RevokedCodeExplainsItself pins the behaviour this release
+// shipped: a revoked code is not a broken link, so it answers 410 with the
+// reason instead of the generic not-found page the earlier plan wanted.
+func TestQRScanLanding_RevokedCodeExplainsItself(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
 			qrTestRows(w, []map[string]any{{
-				"id": float64(2), "code": "BBBBBBBBBBBBBBBB", "asset_id": float64(6), "active": false,
+				"id": float64(2), "code": "BBBBBBBBBBBBBBBB", "asset_id": float64(6),
+				"asset_category": "normal", "active": false, "revoked_at": "2026-01-02T10:00:00Z",
 			}})
 		},
 	})
@@ -161,14 +321,102 @@ func TestQRScanLanding_RevokedCodeReturnsGone(t *testing.T) {
 	if rec.Code != http.StatusGone {
 		t.Fatalf("a revoked code must answer 410, got %d", rec.Code)
 	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "qr.revoked_title") {
+		t.Error("the page must explain that the code was revoked")
+	}
+	if strings.Contains(body, "qr.not_found_title") {
+		t.Error("a revoked code must not look like a code that never existed")
+	}
+}
+
+// TestQRScanLanding_InactiveCodeExplainsItself covers the second shape of a
+// revoked code: a row whose active flag comes back as a string (a hand-written
+// or seeded row) must be treated as inactive, not as live.
+func TestQRScanLanding_InactiveCodeExplainsItself(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			qrTestRows(w, []map[string]any{{
+				"id": float64(3), "code": "CCCCCCCCCCCCCCCC", "asset_id": float64(8),
+				"asset_category": "normal", "active": "false",
+			}})
+		},
+	})
+	defer server.Close()
+
+	h := newHandler(t, server)
+	rec := qrTestGet(t, h.QRScan, "/s/CCCCCCCCCCCCCCCC", "")
+
+	if rec.Code != http.StatusGone {
+		t.Fatalf("an inactive code must answer 410, got %d", rec.Code)
+	}
 	if !strings.Contains(rec.Body.String(), "qr.revoked_title") {
-		t.Error("the revoked page must explain what happened")
+		t.Error("the page must explain that the code was revoked")
+	}
+}
+
+// TestQRScanLanding_UnknownCodeReturnsNotFound covers the code nobody ever
+// issued: the generic page, no table details and no asset lookup.
+func TestQRScanLanding_UnknownCodeReturnsNotFound(t *testing.T) {
+	server := mockOLU(t, nil)
+	defer server.Close()
+
+	h := newHandler(t, server)
+	rec := qrTestGet(t, h.QRScan, "/s/ZZZZZZZZZZZZZZZZ", "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("an unknown code must answer 404, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "qr.not_found_title") {
+		t.Error("the page must answer with the generic not-found message")
+	}
+}
+
+// TestQRScanLanding_MalformedCodeReturnsNotFound covers the invalid code: it
+// can never live in issue_qr_codes, so it must not even be looked up there and
+// must answer with the same generic page.
+func TestQRScanLanding_MalformedCodeReturnsNotFound(t *testing.T) {
+	server := mockOLU(t, nil)
+	defer server.Close()
+
+	h := newHandler(t, server)
+	rec := qrTestGet(t, h.QRScan, "/s/not-a-code", "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a malformed code must answer 404, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "qr.not_found_title") {
+		t.Error("the page must answer with the generic not-found message")
+	}
+}
+
+// TestQRScanLanding_DeletedAssetReturnsNotFound covers a live code whose asset
+// was removed: the link is real, the asset is gone.
+func TestQRScanLanding_DeletedAssetReturnsNotFound(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			qrTestRows(w, []map[string]any{{
+				"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5),
+				"asset_category": "normal", "active": true,
+			}})
+		},
+	})
+	defer server.Close()
+
+	h := newHandler(t, server)
+	rec := qrTestGet(t, h.QRScan, "/s/AAAAAAAAAAAAAAAA", "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a code whose asset is gone must not render, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "qr.asset_not_found_title") {
+		t.Error("the page must say the asset is unavailable")
 	}
 }
 
 // TestQRScanLanding_LegacyCodeStillWorks keeps the fallback honest: codes in
-// the old qr_codes table keep opening the landing after the new table is
-// consulted first.
+// the old qr_codes table keep opening the form after the new table is consulted
+// first, and they fall back to the asset for the category.
 func TestQRScanLanding_LegacyCodeStillWorks(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"GET /api/v1/assets/9": func(w http.ResponseWriter, r *http.Request) {
@@ -200,5 +448,8 @@ func TestQRScanLanding_LegacyCodeStillWorks(t *testing.T) {
 	}
 	if !strings.Contains(body, "issues.asset.category.normal") {
 		t.Error("Baja must show up as the normal asset category")
+	}
+	if !strings.Contains(body, `action="/s/QR-LEGACY1/report"`) {
+		t.Error("a legacy code must offer the anonymous form too")
 	}
 }
