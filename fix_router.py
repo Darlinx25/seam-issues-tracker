@@ -23,6 +23,12 @@ GROUP_ROUTES = [
 
 REJECT_ROUTE = '\tmux.HandleFunc("POST /issues/{id}/reject", r.requireAuth(r.handler.IssueReject))\n'
 
+# The create form's resolution estimate asks the server for the exact time
+# when the priority or the linked asset changes. The literal path wins over
+# "/issues/{id}" by ServeMux precedence, the same way "/issues/new" does.
+SLA_ESTIMATE_ANCHOR = '\tmux.HandleFunc("GET /issues/new", r.requireAuth(r.handler.IssueNew))\n'
+SLA_ESTIMATE_ROUTE = '\tmux.HandleFunc("GET /issues/sla-estimate", r.requireAuth(r.handler.IssueSLAEstimate))\n'
+
 # Per-asset QR codes (issue_qr_codes). Registered next to the asset detail
 # route, inside the same EnableOperational block: the card is part of the
 # asset screen. Mutations use requirePerm(PermAssetsAssetEdit) on top of the
@@ -63,6 +69,13 @@ def patch_issue_routes(path):
         return
 
     changed = False
+    if '"GET /issues/sla-estimate"' not in block:
+        if SLA_ESTIMATE_ANCHOR not in block:
+            print("  router: SLA estimate anchor not found, skipping")
+        else:
+            block = block.replace(SLA_ESTIMATE_ANCHOR, SLA_ESTIMATE_ANCHOR + SLA_ESTIMATE_ROUTE, 1)
+            changed = True
+            print("  router: SLA estimate route inserted")
     if '"GET /issues/{id}/assign"' not in block or '"POST /issues/{id}/assign"' not in block:
         block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(ASSIGN_ROUTES), 1)
         changed = True

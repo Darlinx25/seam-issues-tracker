@@ -394,8 +394,90 @@ _QR_KEYS = {
     },
 }
 
+# Create-issue form: the form engine resolves enum labels through
+# "<form>.<field>.<value>" (singular "issue"), while the list/detail keep
+# using "issues.priority.*". The SLA card is one exact value, so these are
+# the duration words it needs to render minutes in the user's language.
+_ISSUE_FORM_KEYS = {
+    'en': {
+        'issue.priority.critical': 'Critical',
+        'issue.priority.high': 'High',
+        'issue.priority.medium': 'Medium',
+        'issue.priority.low': 'Low',
+        'issues.sla.estimate.title': 'Estimated resolution',
+        'issues.sla.estimate.subtitle': 'Based on the priority and the asset criticality',
+        'issues.sla.estimate.hint': 'The template assigned to the asset can override this time.',
+        'issues.sla.estimate.unit.day': 'day',
+        'issues.sla.estimate.unit.days': 'days',
+        'issues.sla.estimate.unit.hour': 'hour',
+        'issues.sla.estimate.unit.hours': 'hours',
+        'issues.sla.estimate.unit.minute': 'minute',
+        'issues.sla.estimate.unit.minutes': 'minutes',
+    },
+    'es': {
+        'issue.priority.critical': 'Crítica',
+        'issue.priority.high': 'Alta',
+        'issue.priority.medium': 'Media',
+        'issue.priority.low': 'Baja',
+        'issues.sla.estimate.title': 'Tiempo estimado de resolución',
+        'issues.sla.estimate.subtitle': 'Según la prioridad y la criticidad del activo',
+        'issues.sla.estimate.hint': 'La plantilla asignada al activo puede sobrescribir este tiempo.',
+        'issues.sla.estimate.unit.day': 'día',
+        'issues.sla.estimate.unit.days': 'días',
+        'issues.sla.estimate.unit.hour': 'hora',
+        'issues.sla.estimate.unit.hours': 'horas',
+        'issues.sla.estimate.unit.minute': 'minuto',
+        'issues.sla.estimate.unit.minutes': 'minutos',
+    },
+    'pt': {
+        'issue.priority.critical': 'Crítica',
+        'issue.priority.high': 'Alta',
+        'issue.priority.medium': 'Média',
+        'issue.priority.low': 'Baixa',
+        'issues.sla.estimate.title': 'Tempo estimado de resolução',
+        'issues.sla.estimate.subtitle': 'Conforme a prioridade e a criticidade do ativo',
+        'issues.sla.estimate.hint': 'O modelo atribuído ao ativo pode substituir este tempo.',
+        'issues.sla.estimate.unit.day': 'dia',
+        'issues.sla.estimate.unit.days': 'dias',
+        'issues.sla.estimate.unit.hour': 'hora',
+        'issues.sla.estimate.unit.hours': 'horas',
+        'issues.sla.estimate.unit.minute': 'minuto',
+        'issues.sla.estimate.unit.minutes': 'minutos',
+    },
+    'ja': {
+        'issue.priority.critical': '緊急',
+        'issue.priority.high': '高',
+        'issue.priority.medium': '中',
+        'issue.priority.low': '低',
+        'issues.sla.estimate.title': '解決時間の目安',
+        'issues.sla.estimate.subtitle': '優先度と資産の重要度に基づく目安',
+        'issues.sla.estimate.hint': '割り当てられたテンプレートがこの時間を上書きできます。',
+        'issues.sla.estimate.unit.day': '日',
+        'issues.sla.estimate.unit.days': '日',
+        'issues.sla.estimate.unit.hour': '時間',
+        'issues.sla.estimate.unit.hours': '時間',
+        'issues.sla.estimate.unit.minute': '分',
+        'issues.sla.estimate.unit.minutes': '分',
+    },
+}
+
 for _k, _v in _FILTER_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
+for _k, _v in _ISSUE_FORM_KEYS.get(L, {}).items():
+    d.setdefault(_k, _v)
+for _k in (
+    'issues.sla.estimate.normal',
+    'issues.sla.estimate.critical',
+    'issues.sla.estimate.critical.normal',
+    'issues.sla.estimate.critical.critical',
+    'issues.sla.estimate.high.normal',
+    'issues.sla.estimate.high.critical',
+    'issues.sla.estimate.medium.normal',
+    'issues.sla.estimate.medium.critical',
+    'issues.sla.estimate.low.normal',
+    'issues.sla.estimate.low.critical',
+):
+    d.pop(_k, None)
 for _k, _v in _QR_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
 

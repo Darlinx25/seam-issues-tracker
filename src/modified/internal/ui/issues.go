@@ -243,7 +243,7 @@ func defaultSLAResolutionMinutes(priority, assetCategory string) int64 {
 		case "high":
 			return 1440
 		case "medium":
-			return 2880
+			return 1440
 		case "low":
 			return 2880
 		default:
@@ -256,7 +256,7 @@ func defaultSLAResolutionMinutes(priority, assetCategory string) int64 {
 		case "high":
 			return 2880
 		case "medium":
-			return 10080
+			return 4320
 		case "low":
 			return 10080
 		default:
@@ -282,6 +282,43 @@ func slaMinutesFromTemplate(tpl *IssueTemplate, kind string, priority string) in
 		}
 	}
 	return 0
+}
+
+// issueResolutionMinutes resolves the exact resolution time used when an
+// issue is created: the assigned template wins, otherwise the priority and
+// asset-category default applies.
+func issueResolutionMinutes(tpl *IssueTemplate, priority, assetCategory string) int64 {
+	if m := slaMinutesFromTemplate(tpl, "resolution", priority); m > 0 {
+		return m
+	}
+	return defaultSLAResolutionMinutes(priority, assetCategory)
+}
+
+// formatSLAEstimateDuration renders an exact minute count in the largest
+// whole unit that divides it, so the create form reads "7 días" instead of
+// "10080m". Template overrides that are not whole days/hours stay in minutes.
+func formatSLAEstimateDuration(t func(key string, args ...any) string, minutes int64) string {
+	if minutes <= 0 {
+		return "—"
+	}
+	if minutes%(24*60) == 0 {
+		n := minutes / (24 * 60)
+		if n == 1 {
+			return "1 " + t("issues.sla.estimate.unit.day")
+		}
+		return fmt.Sprintf("%d %s", n, t("issues.sla.estimate.unit.days"))
+	}
+	if minutes%60 == 0 {
+		n := minutes / 60
+		if n == 1 {
+			return "1 " + t("issues.sla.estimate.unit.hour")
+		}
+		return fmt.Sprintf("%d %s", n, t("issues.sla.estimate.unit.hours"))
+	}
+	if minutes == 1 {
+		return "1 " + t("issues.sla.estimate.unit.minute")
+	}
+	return fmt.Sprintf("%d %s", minutes, t("issues.sla.estimate.unit.minutes"))
 }
 
 func formatDurationMinutes(m int64) string {
@@ -333,7 +370,7 @@ func calculateSLADeadline(priority, assetCategory string, now time.Time) string 
 		case "high":
 			d = 24 * time.Hour
 		case "medium":
-			d = 48 * time.Hour
+			d = 24 * time.Hour
 		case "low":
 			d = 48 * time.Hour
 		default:
@@ -346,7 +383,7 @@ func calculateSLADeadline(priority, assetCategory string, now time.Time) string 
 		case "high":
 			d = 48 * time.Hour
 		case "medium":
-			d = 7 * 24 * time.Hour
+			d = 3 * 24 * time.Hour
 		case "low":
 			d = 7 * 24 * time.Hour
 		default:
@@ -598,8 +635,36 @@ func (h *UIHandler) IssueNew(w http.ResponseWriter, r *http.Request) {
 	rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
 	formContent := formEng.Render(ctx, resolveSchema(ctx, "issues", "create", issueschemas.Schema("create")), issueFormDefaults(), nil, rc)
 
-	data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent}
-	h.page.Render(w, r, t("issues.new"), "/issues", IssueFormPage(data, t))
+	data := IssueFormData{
+		CSRFToken:         csrfToken,
+		FormContent:       formContent,
+		Priority:          "medium",
+		ResolutionMinutes: defaultSLAResolutionMinutes("medium", "normal"),
+	}
+	h.page.Render(w, r, t("issues.new"), "/issues/new", IssueFormPage(data, t))
+}
+
+// IssueSLAEstimate handles GET /issues/sla-estimate -- the HTMX partial that
+// refreshes the create form's resolution estimate when the priority or the
+// selected asset changes. Resolving the asset here keeps the displayed time
+// identical to the deadline stored on creation, including template overrides.
+func (h *UIHandler) IssueSLAEstimate(w http.ResponseWriter, r *http.Request) {
+	t := h.translateFunc(r)
+	priority := r.URL.Query().Get("priority")
+	switch priority {
+	case "critical", "high", "medium", "low":
+	default:
+		priority = "medium"
+	}
+	assetID := toInt64FromString(r.URL.Query().Get("asset_id"))
+	var tpl *IssueTemplate
+	assetCategory := "normal"
+	if assetID > 0 {
+		tpl = h.resolveIssueTemplate(r.Context(), assetID)
+		assetCategory = h.resolveAssetCategory(r.Context(), assetID)
+	}
+	minutes := issueResolutionMinutes(tpl, priority, assetCategory)
+	_ = h.page.RenderPartial(w, issueSLAEstimate(minutes, priority, t))
 }
 
 // IssueCreate handles POST /issues.
@@ -667,8 +732,19 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		if tpl != nil && len(tpl.Fields) > 0 {
 			tplContent = h.renderTemplateFields(ctx, tpl, formData, fieldErrors, csrfToken)
 		}
-		data := IssueFormData{CSRFToken: csrfToken, FormContent: formContent, Errors: errors, TemplateFieldsContent: tplContent}
-		h.page.Render(w, r, t("issues.new"), "/issues", IssueFormPage(data, t))
+		resolutionMinutes := defaultSLAResolutionMinutes(priority, "normal")
+		if assetID > 0 {
+			resolutionMinutes = issueResolutionMinutes(tpl, priority, h.resolveAssetCategory(ctx, assetID))
+		}
+		data := IssueFormData{
+			CSRFToken:             csrfToken,
+			FormContent:           formContent,
+			Errors:                errors,
+			TemplateFieldsContent: tplContent,
+			Priority:              priority,
+			ResolutionMinutes:     resolutionMinutes,
+		}
+		h.page.Render(w, r, t("issues.new"), "/issues/new", IssueFormPage(data, t))
 		return
 	}
 
@@ -703,17 +779,11 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	assetCategory := h.resolveAssetCategory(ctx, assetID)
 	issueData["asset_category"] = assetCategory
 
-	var firstRespMin, resMin int64
-	if tpl != nil {
-		firstRespMin = slaMinutesFromTemplate(tpl, "first_response", priority)
-		resMin = slaMinutesFromTemplate(tpl, "resolution", priority)
-	}
+	firstRespMin := slaMinutesFromTemplate(tpl, "first_response", priority)
 	if firstRespMin <= 0 {
 		firstRespMin = defaultSLAFirstResponseMinutes(priority, assetCategory)
 	}
-	if resMin <= 0 {
-		resMin = defaultSLAResolutionMinutes(priority, assetCategory)
-	}
+	resMin := issueResolutionMinutes(tpl, priority, assetCategory)
 	if d := calculateSLADeadlineFromMinutes(firstRespMin, now); d != "" {
 		issueData["sla_first_response_deadline"] = d
 	}
@@ -1159,6 +1229,12 @@ type IssueFormData struct {
 	FormContent mi.H
 	Errors      map[string]string
 
+	// Priority and ResolutionMinutes drive the single resolution-estimate
+	// card on first paint and after a validation error, so the form still
+	// shows the right time without waiting for the HTMX partial.
+	Priority          string
+	ResolutionMinutes int64
+
 	// TemplateFieldsContent is the pre-rendered custom-field block of the
 	// resolved template, used when re-rendering after a validation error so
 	// the values seen before submit are preserved. Nil on a fresh GET, where
@@ -1170,6 +1246,16 @@ type IssueFormData struct {
 func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) mi.H {
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
+	}
+	priority := data.Priority
+	switch priority {
+	case "critical", "high", "medium", "low":
+	default:
+		priority = "medium"
+	}
+	resolutionMinutes := data.ResolutionMinutes
+	if resolutionMinutes <= 0 {
+		resolutionMinutes = defaultSLAResolutionMinutes(priority, "normal")
 	}
 	return func(b *mi.Builder) mi.Node {
 		return b.Div(mi.Class("space-y-6 max-w-2xl"),
@@ -1193,6 +1279,7 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 				return b.Form(mi.Class("space-y-4"), mi.Method("post"), mi.Action("/issues"),
 					data.FormContent(b),
 					b.Div(tplFields...),
+					issueSLAEstimate(resolutionMinutes, priority, t)(b),
 					b.Div(mi.Class("flex justify-end gap-3 pt-4"),
 						b.A(mi.Href("/issues"), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
 							t("action.cancel"),
@@ -1203,6 +1290,49 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 					),
 				)
 			})(b),
+		)
+	}
+}
+
+// issueSLAEstimate renders the single resolution-time card at the bottom of
+// the create form. The HTMX attributes let the server recompute the exact
+// time when the priority or asset changes; the initial render already carries
+// the same markup so the card is useful before any request.
+func issueSLAEstimate(minutes int64, priority string, t func(key string, args ...any) string) mi.H {
+	switch priority {
+	case "critical", "high", "medium", "low":
+	default:
+		priority = "medium"
+	}
+	return func(b *mi.Builder) mi.Node {
+		return b.Div(
+			mi.ID("issue-sla-estimate"),
+			mi.Attr("data-issue-sla", "1"),
+			mi.Attr("data-priority", priority),
+			mi.Attr("data-sla-minutes", strconv.FormatInt(minutes, 10)),
+			mi.Attr("hx-get", "/issues/sla-estimate"),
+			mi.Attr("hx-trigger", "change from:#field-priority, change from:#field-asset_id"),
+			mi.Attr("hx-target", "this"),
+			mi.Attr("hx-swap", "outerHTML"),
+			mi.Attr("hx-include", "#field-priority, #field-asset_id"),
+			mi.Attr("role", "status"),
+			mi.Attr("aria-live", "polite"),
+			mi.Class("rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2.5 dark:border-indigo-900/40 dark:bg-indigo-950/20"),
+			b.Div(mi.Class("flex items-center gap-3"),
+				b.Div(mi.Class("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white"),
+					b.Span(mi.Class("material-icons text-base"), "schedule"),
+				),
+				b.Div(mi.Class("min-w-0 flex-1"),
+					b.Div(mi.Class("flex flex-wrap items-center gap-x-2"),
+						b.Span(mi.Class("text-xs font-semibold text-gray-800 dark:text-gray-100"), t("issues.sla.estimate.title")),
+						b.Span(mi.Class("rounded-full bg-white/80 px-1.5 py-0.5 text-xs font-medium text-indigo-700 ring-1 ring-indigo-200 dark:bg-gray-900/50 dark:text-indigo-300 dark:ring-indigo-800"),
+							t("issue.priority."+priority),
+						),
+					),
+					b.P(mi.Attr("title", t("issues.sla.estimate.hint")), mi.Class("mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400"), t("issues.sla.estimate.subtitle")),
+				),
+				b.Div(mi.Attr("data-sla-value", "1"), mi.Class("shrink-0 text-right text-lg font-semibold leading-tight text-gray-900 dark:text-white"), formatSLAEstimateDuration(t, minutes)),
+			),
 		)
 	}
 }

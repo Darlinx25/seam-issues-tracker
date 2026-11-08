@@ -1,0 +1,95 @@
+--- a/internal/ui/layout.go
++++ b/internal/ui/layout.go
+@@ -163,6 +163,25 @@
+ 	if active == nil {
+ 		return nil
+ 	}
++	// Resolve the single active sidebar item first. /issues and
++	// /issues/new both prefix-match /issues/new, so marking every match
++	// lit up two entries at once. The longest matching href wins, which
++	// keeps /issues/42 on Incidencias and /issues/new on Nueva Incidencia.
++	activeHref := ""
++	for _, si := range active.SidebarItems {
++		if si.Section || si.URL == "" {
++			continue
++		}
++		if si.URL == "/map" && !cfg.EnableMap {
++			continue
++		}
++		if si.RequiredPerm != "" && !auth.HasPermission(cfg.UserRole, auth.Permission(si.RequiredPerm)) {
++			continue
++		}
++		if navItemMatchesPath(activePath, si.URL) && len(si.URL) > len(activeHref) {
++			activeHref = si.URL
++		}
++	}
+ 	items := make([]NavItem, 0, len(active.SidebarItems))
+ 	for _, si := range active.SidebarItems {
+ 		// Map's own visibility is runtime-mutable per request (toggled
+@@ -184,23 +203,11 @@
+ 		if si.RequiredPerm != "" && !auth.HasPermission(cfg.UserRole, auth.Permission(si.RequiredPerm)) {
+ 			continue
+ 		}
+-		// Exact match for "/" (Dashboard) -- as a prefix it would match
+-		// every path, exactly the reason MainNav's own Dashboard entry
+-		// used activePath == "/" rather than hasPrefix. Every other
+-		// item's own sub-path can never collide with an unrelated
+-		// route the same way, so prefix matching is correct and
+-		// matches every other item's own prior behavior unchanged.
+-		var isActive bool
+-		if si.URL == "/" {
+-			isActive = activePath == "/"
+-		} else {
+-			isActive = hasPrefix(activePath, si.URL)
+-		}
+ 		items = append(items, NavItem{
+ 			Label:  t(si.Label),
+ 			URL:    si.URL,
+ 			Icon:   si.Icon,
+-			Active: isActive,
++			Active: si.URL != "" && si.URL == activeHref,
+ 		})
+ 	}
+ 	return items
+@@ -210,6 +217,17 @@
+ 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+ }
+ 
++// navItemMatchesPath reports whether activePath is the sidebar item's own
++// page or a descendant of it. The boundary check keeps "/issues" from
++// matching "/issues-archive"; the longest-match pass above keeps nested
++// items such as "/issues" and "/issues/new" from both being active.
++func navItemMatchesPath(activePath, href string) bool {
++	if href == "/" {
++		return activePath == "/"
++	}
++	return activePath == href || strings.HasPrefix(activePath, href+"/")
++}
++
+ // Create dark mode handler using minty's built-in support
+ var darkMode = mi.DarkModeTailwind(
+ 	mi.DarkModeStorage("seam-dark-mode"),
+@@ -457,13 +475,21 @@
+ 							void mc.offsetWidth;
+ 							mc.style.animation = '';
+ 						}
+-						// 2. Update active nav state in both sidebars
++						// 2. Update active nav state in both sidebars. Match the
++						// single longest href so a nested page cannot light up
++						// both its parent and its own entry.
+ 						var path = window.location.pathname;
++						var bestHref = '';
+ 						document.querySelectorAll('[data-nav-href]').forEach(function(el) {
+ 							var href = el.getAttribute('data-nav-href');
+-							var isActive = href === '/'
++							if (!href) return;
++							var matches = href === '/'
+ 								? path === '/'
+ 								: (path === href || path.startsWith(href + '/'));
++							if (matches && href.length > bestHref.length) bestHref = href;
++						});
++						document.querySelectorAll('[data-nav-href]').forEach(function(el) {
++							var isActive = el.getAttribute('data-nav-href') === bestHref;
+ 							el.className = isActive
+ 								? el.getAttribute('data-active-class')
+ 								: el.getAttribute('data-inactive-class');

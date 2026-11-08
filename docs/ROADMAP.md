@@ -96,8 +96,8 @@ Categoría del activo y SLA:
 |---|---|
 | categoría | critico · normal |
 | mapeo criticality | High → critico · Medium y Low → normal |
-| SLA crítico | critical 4h · high 24h · medium 48h |
-| SLA normal | critical 24h · high 48h · medium 7 días |
+| SLA crítico | critical 4h · high 24h · medium 24h · low 48h |
+| SLA normal | critical 24h · high 48h · medium 3 días · low 7 días |
 
 Campos de la entidad issues: id · title · description · state ·
 machine_id · priority · severity · asset_id · asset_category ·

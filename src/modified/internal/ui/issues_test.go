@@ -2043,7 +2043,7 @@ func TestCalculateSLADeadline(t *testing.T) {
 	if got := calculateSLADeadline("high", "critico", base); got != "2026-10-29T12:00:00Z" {
 		t.Errorf("critico/high = %q", got)
 	}
-	if got := calculateSLADeadline("medium", "critico", base); got != "2026-10-30T12:00:00Z" {
+	if got := calculateSLADeadline("medium", "critico", base); got != "2026-10-29T12:00:00Z" {
 		t.Errorf("critico/medium = %q", got)
 	}
 	if got := calculateSLADeadline("low", "critico", base); got != "2026-10-30T12:00:00Z" {
@@ -2055,7 +2055,7 @@ func TestCalculateSLADeadline(t *testing.T) {
 	if got := calculateSLADeadline("high", "normal", base); got != "2026-10-30T12:00:00Z" {
 		t.Errorf("normal/high = %q", got)
 	}
-	if got := calculateSLADeadline("medium", "normal", base); got != "2026-11-04T12:00:00Z" {
+	if got := calculateSLADeadline("medium", "normal", base); got != "2026-10-31T12:00:00Z" {
 		t.Errorf("normal/medium = %q", got)
 	}
 	if got := calculateSLADeadline("low", "normal", base); got != "2026-11-04T12:00:00Z" {
