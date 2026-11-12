@@ -22,3 +22,7 @@ merged-seam/
 # OS
 .DS_Store
 Thumbs.db
+
+# Python bytecode (generated when merge.sh runs the fix_*.py scripts)
+__pycache__/
+*.pyc

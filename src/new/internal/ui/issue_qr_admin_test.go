@@ -85,14 +85,14 @@ func TestIssueQRAdminTotalPages(t *testing.T) {
 }
 
 func TestIssueQRCodesAdminPageRenders(t *testing.T) {
-	t := func(k string, a ...any) string { return k }
+	tr := func(k string, a ...any) string { return k }
 	data := IssueQRCodesListData{
 		Filters:   IssueQRCodeAdminFilters{Status: "all", Page: 1},
 		Rows:      []issueQRAdminRow{{ID: 1, Code: "ABC", AssetID: 10, AssetName: "Server", Active: true, CreatorName: "Alice", CreatedAt: "2025-01-01"}},
 		Total:     1,
 		CSRFToken: "tok",
 	}
-	n := IssueQRCodesAdminPage(data, t)
+	n := IssueQRCodesAdminPage(data, tr)
 	if n == nil {
 		t.Fatal("nil node")
 	}
