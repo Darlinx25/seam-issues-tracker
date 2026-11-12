@@ -1,14 +1,15 @@
 --- a/internal/server/server.go
 +++ b/internal/server/server.go
-@@ -447,6 +447,11 @@
+@@ -447,6 +447,12 @@
  				{Label: "nav.module.issues", Section: true},
  				{Label: "issues.list_title", URL: "/issues", Icon: "bug_report"},
  				{Label: "issues.new", URL: "/issues/new", Icon: "add_circle"},
-+				// Templates are managed by admin/manager only (2026-10-10),
++				// Templates and QR codes are managed by admin/manager only.
 +				// reusing system.settings.edit as the gate -- the same
 +				// permission the settings screens already use for
 +				// configuration, no new permission namespace invented.
 +				{Label: "issues.templates", URL: "/issue-templates", Icon: "article", RequiredPerm: string(auth.PermSettingsEdit)},
++				{Label: "issue_qr_admin.nav", URL: "/issue-qr-codes", Icon: "qr_code_2", RequiredPerm: string(auth.PermSettingsEdit)},
  			},
  		})
  		// Demo (opt-in, EnableDemo): shows new components and fixes to

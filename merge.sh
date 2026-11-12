@@ -151,6 +151,9 @@ if [ -f "$SCRIPT_DIR/fix_qr_config.py" ]; then
         "$OUTPUT_DIR/internal/server/server.go" \
         "$OUTPUT_DIR/config.example.json"
 fi
+if [ -f "$SCRIPT_DIR/fix_server_sidebar.py" ] && [ -f "$OUTPUT_DIR/internal/server/server.go" ]; then
+    python3 "$SCRIPT_DIR/fix_server_sidebar.py" "$OUTPUT_DIR/internal/server/server.go"
+fi
 if [ -f "$SCRIPT_DIR/merge_locales.py" ]; then
     for L in en es pt ja; do
         LF="$OUTPUT_DIR/internal/i18n/locales/$L.json"

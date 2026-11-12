@@ -29,6 +29,13 @@ REJECT_ROUTE = '\tmux.HandleFunc("POST /issues/{id}/reject", r.requireAuth(r.han
 SLA_ESTIMATE_ANCHOR = '\tmux.HandleFunc("GET /issues/new", r.requireAuth(r.handler.IssueNew))\n'
 SLA_ESTIMATE_ROUTE = '\tmux.HandleFunc("GET /issues/sla-estimate", r.requireAuth(r.handler.IssueSLAEstimate))\n'
 
+# Admin QR codes listing (global, admin-only). Separate namespace.
+QR_ADMIN_ROUTES = [
+    '\tmux.HandleFunc("GET /issue-qr-codes", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueQRCodesList))\n',
+    '\tmux.HandleFunc("POST /issue-qr-codes/revoke", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueQRCodesBulkRevoke))\n',
+    '\tmux.HandleFunc("POST /issue-qr-codes/{id}/revoke", r.requirePerm(auth.PermSettingsEdit, r.handler.IssueQRCodeAdminRevoke))\n',
+]
+
 # Per-asset QR codes (issue_qr_codes). Registered next to the asset detail
 # route, inside the same EnableOperational block: the card is part of the
 # asset screen. Mutations use requirePerm(PermAssetsAssetEdit) on top of the
@@ -84,6 +91,14 @@ def patch_issue_routes(path):
         block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(GROUP_ROUTES), 1)
         changed = True
         print("  router: grouping routes inserted")
+    if '"GET /issue-qr-codes"' not in block:
+        anchor = '\tmux.HandleFunc("GET /issue-templates/fields", r.requireAuth(r.handler.IssueTemplateFields))\n'
+        if anchor in block:
+            block = block.replace(anchor, ''.join(QR_ADMIN_ROUTES) + '\n' + anchor, 1)
+        else:
+            block = block + '\n' + ''.join(QR_ADMIN_ROUTES)
+        changed = True
+        print("  router: issue QR admin routes inserted")
 
     if not changed:
         print("  router: issue routes already present")
