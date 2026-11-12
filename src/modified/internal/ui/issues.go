@@ -1446,6 +1446,29 @@ type IssueDetailData struct {
 	History           []IssueHistoryEntry
 }
 
+type issueActionVariant string
+
+const (
+	issueActionPrimary   issueActionVariant = "primary"
+	issueActionSecondary issueActionVariant = "secondary"
+	issueActionDanger    issueActionVariant = "danger"
+	issueActionNeutral   issueActionVariant = "neutral"
+)
+
+func issueActionClass(variant issueActionVariant) string {
+	base := "inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3.5 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800"
+	switch variant {
+	case issueActionPrimary:
+		return base + " bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-indigo-500"
+	case issueActionSecondary:
+		return base + " border border-indigo-300 text-indigo-600 hover:bg-indigo-50 focus:ring-indigo-500 dark:border-indigo-700 dark:text-indigo-400 dark:hover:bg-indigo-900/20"
+	case issueActionDanger:
+		return base + " border border-red-300 text-red-600 hover:bg-red-50 focus:ring-red-500 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20"
+	default:
+		return base + " border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-gray-500 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+	}
+}
+
 func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) string) mi.H {
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
@@ -1539,46 +1562,68 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				children = append(children, b.Div(mi.Class("mt-4 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-700 dark:text-amber-400"),
 					t("issues.reject.motivo")+": "+iss.RejectReason))
 			}
+			actionBar := []interface{}{
+				mi.Class("mt-6 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-4 dark:border-gray-700"),
+			}
 			if data.CanAct {
 				switch iss.State {
 				case "reported", "triaged":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
+					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/start", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.start")),
+						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
+							b.Span(mi.Class("material-icons text-base"), "play_arrow"),
+							b.Span(t("issues.action.start")),
+						),
 					))
 				case "in_progress":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
+					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.resolve")),
+						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
+							b.Span(mi.Class("material-icons text-base"), "check_circle"),
+							b.Span(t("issues.action.resolve")),
+						),
 					))
 				case "resolved":
-					children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
+					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/close", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.close")),
+						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
+							b.Span(mi.Class("material-icons text-base"), "done_all"),
+							b.Span(t("issues.action.close")),
+						),
 					))
 				}
 			}
 			if data.CanAssign {
-				children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
-					mi.Class("mt-4 inline-block px-4 py-2 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-lg font-medium hover:bg-indigo-50 dark:hover:bg-indigo-900/20"),
-					t("issues.action.assign"),
+				actionBar = append(actionBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
+					mi.Class(issueActionClass(issueActionSecondary)),
+					b.Span(mi.Class("material-icons text-base"), "person_add"),
+					b.Span(t("issues.action.assign")),
+				))
+			}
+			dangerBar := []interface{}{
+				mi.Class("flex flex-wrap items-center gap-2 sm:ml-auto"),
+			}
+			if data.CanUngroup {
+				dangerBar = append(dangerBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/ungroup", iss.ID)),
+					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+					b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionNeutral)),
+						b.Span(mi.Class("material-icons text-base"), "link_off"),
+						b.Span(t("issues.group.ungroup")),
+					),
 				))
 			}
 			if data.CanAct && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
-				children = append(children, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
-					mi.Class("mt-4 inline-block px-4 py-2 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 rounded-lg font-medium hover:bg-red-50 dark:hover:bg-red-900/20"),
-					t("issues.action.reject"),
+				dangerBar = append(dangerBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
+					mi.Class(issueActionClass(issueActionDanger)),
+					b.Span(mi.Class("material-icons text-base"), "block"),
+					b.Span(t("issues.action.reject")),
 				))
 			}
-			if data.CanUngroup {
-				children = append(children, b.Form(mi.Class("mt-4"), mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/ungroup", iss.ID)),
-					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-					b.Button(mi.Type("submit"), mi.Class("px-4 py-2 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 rounded-lg font-medium hover:bg-amber-50 dark:hover:bg-amber-900/20"),
-						t("issues.group.ungroup")),
-				))
+			if len(dangerBar) > 1 {
+				actionBar = append(actionBar, b.Div(dangerBar...))
+			}
+			if len(actionBar) > 1 {
+				children = append(children, b.Div(actionBar...))
 			}
 			return b.Div(children...)
 		})(b)

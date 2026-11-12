@@ -786,12 +786,17 @@ func issueListToolbar(f IssueListFilters, t func(key string, args ...any) string
 				{Value: issueSortSLA, Label: t("issues.sort.sla"), Selected: f.Sort == issueSortSLA},
 			})(b),
 		)
+		syncFilters := "var b=document.getElementById('issue-filters-toggle'),p=document.getElementById('issue-filters');if(!b||!p)return;var open=!p.hidden&&!p.hasAttribute('hidden');b.setAttribute('aria-expanded',open?'true':'false');if(open){p.hidden=false;p.removeAttribute('hidden');p.style.display=''}else{p.hidden=true;p.setAttribute('hidden','');p.style.display='none';if(document.activeElement===b)b.blur()}"
 		toggle := []interface{}{
 			mi.Type("button"),
 			mi.ID("issue-filters-toggle"),
 			mi.Attr("aria-controls", "issue-filters"),
 			mi.Attr("aria-expanded", strconv.FormatBool(count > 0)),
-			mi.Attr("onclick", "var p=document.getElementById('issue-filters');var o=p.hidden;p.hidden=!o;this.setAttribute('aria-expanded',o?'true':'false')"),
+			mi.Attr("onclick", "var p=document.getElementById('issue-filters');if(!p)return;var open=!p.hidden&&!p.hasAttribute('hidden');if(open){p.hidden=true;p.setAttribute('hidden','');p.style.display='none';this.setAttribute('aria-expanded','false');this.blur()}else{p.hidden=false;p.removeAttribute('hidden');p.style.display='';this.setAttribute('aria-expanded','true')}"),
+			mi.Attr("hx-on:htmx:history-restore", syncFilters),
+			mi.Attr("hx-on:htmx:historyRestore", syncFilters),
+			mi.Attr("hx-on:htmx:after-settle", syncFilters),
+			mi.Attr("hx-on:htmx:afterSettle", syncFilters),
 			mi.Class("inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"),
 			b.Span(mi.Class("material-icons text-lg text-gray-400"), mi.Attr("aria-hidden", "true"), "tune"),
 			b.Span(t("issues.filter.button")),
@@ -814,14 +819,19 @@ func issueListToolbar(f IssueListFilters, t func(key string, args ...any) string
 			mi.ID("issue-filters"),
 			mi.Attr("role", "region"),
 			mi.Attr("aria-label", t("issues.filter.button")),
+			mi.Attr("hx-on:htmx:history-restore", syncFilters),
+			mi.Attr("hx-on:htmx:historyRestore", syncFilters),
+			mi.Attr("hx-on:htmx:after-settle", syncFilters),
+			mi.Attr("hx-on:htmx:afterSettle", syncFilters),
 			mi.Class("mt-4 min-w-0 border-t border-gray-200 pt-4 dark:border-gray-700"),
 		}
 		if count == 0 {
-			panel = append(panel, mi.Attr("hidden", "hidden"))
+			panel = append(panel, mi.Attr("hidden", "hidden"), mi.Attr("style", "display:none"))
 		}
 		panel = append(panel, issueListFilterPanel(f, t)(b))
 		card = append(card, b.Div(panel...))
-		card = append(card, b.Noscript(b.Style("#issue-filters{display:block!important}")))
+		card = append(card, b.Style("#issue-filters[hidden]{display:none!important}"))
+		card = append(card, b.Noscript(b.Style("#issue-filters:not([hidden]){display:block!important}")))
 
 		return b.Div(card...)
 	}

@@ -256,21 +256,39 @@ func IssueAssignPage(data IssueAssignData, t func(key string, args ...any) strin
 		if !data.Locked && data.FormContent != nil {
 			children = append(children, data.FormContent(b))
 		}
-		actions := []interface{}{
-			mi.Class("flex justify-end gap-3 pt-4"),
+		assigneeLabel := iss.AssigneeName
+		if assigneeLabel == "" {
+			assigneeLabel = t("issues.unassigned")
 		}
-		actions = append(actions,
-			b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.ID)), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
-				t("action.cancel"),
+		backLabel := t("action.cancel")
+		backIcon := "close"
+		if data.Locked {
+			backLabel = t("action.back")
+			backIcon = "arrow_back"
+		}
+		actions := []interface{}{
+			mi.Class("flex flex-col gap-3 border-t border-gray-200 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-gray-700"),
+			b.Div(mi.Class("min-w-0 text-sm text-gray-500 dark:text-gray-400"),
+				b.Span(t("issues.assignee")+": "),
+				b.Span(mi.Class("font-medium text-gray-700 dark:text-gray-300"), assigneeLabel),
 			),
-		)
+		}
+		buttons := []interface{}{
+			mi.Class("flex flex-wrap items-center justify-end gap-2"),
+			b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.ID)), mi.Class(issueActionClass(issueActionNeutral)),
+				b.Span(mi.Class("material-icons text-base"), backIcon),
+				b.Span(backLabel),
+			),
+		}
 		if !data.Locked {
-			actions = append(actions,
-				b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-					t("issues.action.assign"),
+			buttons = append(buttons,
+				b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
+					b.Span(mi.Class("material-icons text-base"), "person_add"),
+					b.Span(t("issues.action.assign")),
 				),
 			)
 		}
+		actions = append(actions, b.Div(buttons...))
 		return b.Div(mi.Class("space-y-6 max-w-2xl"),
 			b.Div(mi.Class("flex items-center gap-4"),
 				b.A(mi.Href(fmt.Sprintf("/issues/%d", iss.ID)), mi.Class("text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"),
