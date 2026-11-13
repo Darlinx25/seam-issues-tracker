@@ -146,30 +146,6 @@ func TestIssueQRReportPage_RendersTemplateFields(t *testing.T) {
 	}
 }
 
-// TestIssueQRReportDonePage_HasNoHandleOnTheRecord pins the confirmation: it
-// names no issue and repeats no contact detail, so a screenshot of it leaks
-// nothing and the channel hands out no tracking handle.
-func TestIssueQRReportDonePage_HasNoHandleOnTheRecord(t *testing.T) {
-	page := issueQRReportDonePage(func(key string, args ...any) string { return key })
-	var buf bytes.Buffer
-	b := &mi.Builder{}
-	if err := page(b).Render(&buf); err != nil {
-		t.Fatalf("could not render the confirmation: %v", err)
-	}
-	body := buf.String()
-
-	for _, want := range []string{"qr.report.done_title", "qr.report.done_message", "qr.report.done_hint", "check_circle"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the confirmation must show %q, body did not contain it", want)
-		}
-	}
-	for _, unwanted := range []string{"carolina@correo.com", "/issues/", "/s/", "#"} {
-		if strings.Contains(body, unwanted) {
-			t.Errorf("the confirmation must not carry %q", unwanted)
-		}
-	}
-}
-
 // TestQRScanLanding_RendersReportForm drives the real handler: a live code
 // resolves to its asset and the public page is the anonymous form.
 func TestQRScanLanding_RendersReportForm(t *testing.T) {

@@ -17,9 +17,9 @@ func MountRoutes(router *ui.Router) func(mux *http.ServeMux) {
 	return func(mux *http.ServeMux) {
 		router.MountIssuesRoutes(mux)
 
-		// The anonymous QR channel (POST /s/{code}/report and
-		// GET /s/{code}/done) is mounted here rather than in the base
-		// router because it is public: no requireAuth, and the base
+		// The public QR routes (POST /s/{code}/report and
+		// GET /track/{token}) are mounted here rather than in the base
+		// router because they are public: no requireAuth, and the base
 		// router has no notion of the issue QR codes.
 		router.MountIssueQRReportRoute(mux)
 	}

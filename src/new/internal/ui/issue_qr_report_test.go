@@ -8,10 +8,13 @@ package ui
 // created with channel "qr" and no reported_by/assignee, the asset and its
 // category come from the code (never from the request), the contact block and
 // the template answers land in form_data, the SLA is computed with the frozen
-// category, and a rejected submission creates nothing.
+// category, and a rejected submission creates nothing. The POST redirects to
+// the public tracking page of the token it just stored, never to an id-based
+// confirmation.
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -52,6 +55,20 @@ func qrReportFSM(routes map[string]http.HandlerFunc) {
 	routes["POST /api/v2/fsm/machine"] = func(w http.ResponseWriter, r *http.Request) {
 		qrTestJSON(w, map[string]any{"id": float64(1), "state": "reported"})
 	}
+}
+
+// assertIssueTrackRedirect checks the POST redirects to the tracking page of
+// the token that was just stored, not to a code-addressed confirmation.
+func assertIssueTrackRedirect(t *testing.T, rec *httptest.ResponseRecorder, created map[string]any) {
+	t.Helper()
+	if created == nil {
+		t.Fatal("xolu.Create for issues was never called")
+	}
+	token, _ := created["track_token"].(string)
+	if !validIssueTrackingToken(token) {
+		t.Fatalf("the created issue must carry a valid track_token, got %q", token)
+	}
+	assertRedirectsTo(t, rec, issueTrackLinkPrefix+token+"?new=1")
 }
 
 // qrReportAssertDeadline checks one SLA deadline is roughly now + want: the
@@ -103,7 +120,7 @@ func TestIssueQRReport_CreatesAnonymousIssue(t *testing.T) {
 	h := newHandler(t, server)
 	rec := postForm(t, h.IssueQRReport, "/s/AAAAAAAAAAAAAAAA/report", qrReportForm())
 
-	assertRedirectsTo(t, rec, "/s/AAAAAAAAAAAAAAAA/done")
+	assertIssueTrackRedirect(t, rec, created)
 	if created == nil {
 		t.Fatal("xolu.Create for issues was never called")
 	}
@@ -177,7 +194,7 @@ func TestIssueQRReport_IgnoresAssetInTheRequest(t *testing.T) {
 	form.Set("asset_category", "normal")
 	rec := postForm(t, h.IssueQRReport, "/s/AAAAAAAAAAAAAAAA/report", form)
 
-	assertRedirectsTo(t, rec, "/s/AAAAAAAAAAAAAAAA/done")
+	assertIssueTrackRedirect(t, rec, created)
 	if created == nil {
 		t.Fatal("xolu.Create for issues was never called")
 	}
@@ -419,7 +436,7 @@ func TestIssueQRReport_StoresTemplateAnswersAndUsesItsSLA(t *testing.T) {
 	form.Set("serial_no", "SN-123")
 	rec := postForm(t, h.IssueQRReport, "/s/AAAAAAAAAAAAAAAA/report", form)
 
-	assertRedirectsTo(t, rec, "/s/AAAAAAAAAAAAAAAA/done")
+	assertIssueTrackRedirect(t, rec, created)
 	if created == nil {
 		t.Fatal("xolu.Create for issues was never called")
 	}
@@ -467,23 +484,5 @@ func TestIssueQRReport_MissingRequiredTemplateField(t *testing.T) {
 	}
 	if !strings.Contains(body, "field.required") {
 		t.Error("the template field must carry its required error")
-	}
-}
-
-// TestIssueQRReportDone_RendersWithoutXolu keeps the confirmation independent
-// of the code row: a code revoked between the POST and the redirect must not
-// turn a filed report into an error page.
-func TestIssueQRReportDone_RendersWithoutXolu(t *testing.T) {
-	server := mockOLU(t, nil)
-	defer server.Close()
-
-	h := newHandler(t, server)
-	rec := qrTestGet(t, h.IssueQRReportDone, "/s/AAAAAAAAAAAAAAAA/done", "")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("the confirmation must render, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "qr.report.done_title") {
-		t.Error("the confirmation must be the report-received page")
 	}
 }

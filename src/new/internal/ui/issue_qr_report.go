@@ -3,8 +3,10 @@ package ui
 // The anonymous reporting channel of the per-asset QR codes.
 //
 // GET /s/{code} renders the form (issue_qr_landing.go); POST /s/{code}/report
-// creates the issue and redirects to GET /s/{code}/done, so a refresh re-reads
-// the confirmation instead of filing the report twice.
+// creates the issue and redirects to GET /track/{token}?new=1, the public
+// tracking page. The token is generated here and stored on the issue; it is
+// the only handle the anonymous reporter gets, so the redirect never carries
+// the issue id.
 //
 // The code is the only identity the scanner presents: the asset, its category
 // and the template assigned to its type all come from the stored row, never
@@ -218,9 +220,20 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The token is generated before the machine: if the CSPRNG ever failed,
+	// the report would fail before creating an orphan machine.
+	trackToken, err := newIssueTrackingToken()
+	if err != nil {
+		h.logger.Error("failed to generate the tracking token", "error", err)
+		h.page.RenderPublicError(w, http.StatusInternalServerError,
+			t("error.server_error"), t("qr.report.error.create_failed"))
+		return
+	}
+
 	// The definition is bootstrapped lazily, the same call the in-app create
 	// makes, so a report from a cold install still gets its machine.
 	defID, err := h.ensureIssueFSMDefinition(ctx)
+
 	if err != nil {
 		h.logger.Error("failed to bootstrap issue FSM definition", "error", err)
 		h.page.RenderPublicError(w, http.StatusInternalServerError, t("error.server_error"), t("qr.report.error.create_failed"))
@@ -245,6 +258,7 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		"asset_id":       assetID,
 		"asset_category": values.AssetCategory,
 		"created_at":     now.Format(time.RFC3339),
+		"track_token":    trackToken,
 	}
 
 	// The SLA is the same pair the in-app create stores: the template assigned
@@ -278,25 +292,16 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The confirmation is addressed by the code, never by the issue id: the
-	// anonymous channel does not hand out a handle on the record.
-	http.Redirect(w, r, "/s/"+code+"/done", http.StatusSeeOther)
+	// The tracking page is addressed by the opaque token, never by the issue
+	// id: the anonymous channel does not hand out a handle on the record.
+	http.Redirect(w, r, issueTrackLinkPrefix+trackToken+"?new=1", http.StatusSeeOther)
 }
 
-// IssueQRReportDone handles GET /s/{code}/done -- the confirmation the POST
-// redirects to. It reads nothing: the report is already filed, and a code
-// revoked between the POST and this redirect must not turn a successful report
-// into an error page.
-func (h *UIHandler) IssueQRReportDone(w http.ResponseWriter, r *http.Request) {
-	t := h.translateFunc(r)
-	_ = h.page.RenderPublic(w, t("qr.report.done_title"), issueQRReportDonePage(t))
-}
-
-// MountIssueQRReportRoute registers the two routes of the anonymous channel.
-// GET /s/{code} is already mounted by the base router; neither of these is
-// wrapped in requireAuth, which is the whole point: the reporter has no
-// account, so there is no session to require.
+// MountIssueQRReportRoute registers the public routes of the QR channel.
+// GET /s/{code} is already mounted by the base router; these are not wrapped
+// in requireAuth, which is the whole point: the reporter has no account, so
+// there is no session to require.
 func (r *Router) MountIssueQRReportRoute(mux *http.ServeMux) {
 	mux.HandleFunc("POST /s/{code}/report", r.handler.IssueQRReport)
-	mux.HandleFunc("GET /s/{code}/done", r.handler.IssueQRReportDone)
+	mux.HandleFunc("GET /track/{token}", r.handler.IssueTrack)
 }

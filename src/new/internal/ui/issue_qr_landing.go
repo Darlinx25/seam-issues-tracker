@@ -141,30 +141,6 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 	}
 }
 
-// issueQRReportDonePage is the confirmation the POST redirects to. It carries
-// no issue id, no contact detail and no tracking link: the anonymous channel
-// must not hand out a handle on the record, and public tracking is out of this
-// iteration's scope.
-func issueQRReportDonePage(t func(key string, args ...any) string) mi.H {
-	if t == nil {
-		t = func(key string, args ...any) string { return key }
-	}
-	return func(b *mi.Builder) mi.Node {
-		return b.Div(mi.Class("space-y-4"),
-			b.Div(mi.Class("text-center"),
-				b.H1(mi.Class("text-xl font-bold text-gray-900 dark:text-white"), t("qr.report.done_title")),
-			),
-			b.Div(mi.Class("px-4 py-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3"),
-				b.Span(mi.Class("material-icons text-green-600 dark:text-green-400"), "check_circle"),
-				b.Div(mi.Class("min-w-0"),
-					b.Div(mi.Class("text-sm font-semibold text-green-800 dark:text-green-300"), t("qr.report.done_message")),
-					b.P(mi.Class("mt-1 text-sm text-gray-600 dark:text-gray-400"), t("qr.report.done_hint")),
-				),
-			),
-		)
-	}
-}
-
 // issueQRReportLabel renders one field label with the required marker every
 // field of this form carries.
 func issueQRReportLabel(b *mi.Builder, forID, text string) mi.Node {

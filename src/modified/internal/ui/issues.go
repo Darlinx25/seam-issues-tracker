@@ -29,17 +29,25 @@ import (
 
 // Issue mirrors what's stored in the "issues" xolu entity.
 type Issue struct {
-	ID             int64
-	Title          string
-	Description    string
-	Priority       string // "critical" | "high" | "medium" | "low"
-	Severity       string // "critical" | "major" | "minor"
-	State          string // "reported" | "triaged" | "in_progress" | "on_hold" | "resolved" | "closed" | "rejected" | "duplicate"
-	RejectReason   string
-	MachineID      int64
-	AssetID        int64
-	AssetName      string // resolved, not stored -- populated on read for display
-	Channel        string // "app" | "qr" | "api"; empty on rows created before it existed
+	ID           int64
+	Title        string
+	Description  string
+	Priority     string // "critical" | "high" | "medium" | "low"
+	Severity     string // "critical" | "major" | "minor"
+	State        string // "reported" | "triaged" | "in_progress" | "on_hold" | "resolved" | "closed" | "rejected" | "duplicate"
+	RejectReason string
+	MachineID    int64
+	AssetID      int64
+	AssetName    string // resolved, not stored -- populated on read for display
+	Channel      string // "app" | "qr" | "api"; empty on rows created before it existed
+	// TrackToken is the opaque token of the public tracking page. It is only
+	// written by the anonymous QR report, so an empty value means "this issue
+	// has no public link".
+	TrackToken string
+	// TrackExpiresAt is the RFC3339 deadline of the public link. It is written
+	// only the first time the issue reaches a closing state; later closing
+	// transitions must not extend it.
+	TrackExpiresAt string
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
 	Assignee       int64
@@ -78,6 +86,8 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		MachineID:                toInt64(e.Data["machine_id"]),
 		AssetID:                  toInt64(e.Data["asset_id"]),
 		Channel:                  toString(e.Data["channel"]),
+		TrackToken:               toString(e.Data["track_token"]),
+		TrackExpiresAt:           toString(e.Data["track_expires_at"]),
 		CreatedAt:                toString(e.Data["created_at"]),
 		ReportedBy:               toInt64(e.Data["reported_by"]),
 		Assignee:                 toInt64(e.Data["assignee"]),
@@ -860,6 +870,9 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	data.CanAssign = h.canAssignIssue(r, issue)
 	data.CanAct = h.canActOnIssue(r, issue)
 	data.CanUngroup = issue.MasterID > 0 && h.canManageIssueGroups(r)
+	if issue.TrackToken != "" {
+		data.TrackingURL = h.issueTrackingLink(issue.TrackToken)
+	}
 
 	// Grouping is resolved on read for display only: a child points at its
 	// case, a case lists its children. Neither is stored twice.
@@ -974,9 +987,17 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 		return
 	}
 
+	now := time.Now().UTC()
 	patchData := map[string]any{
 		"state":      result.Current,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"updated_at": now.Format(time.RFC3339),
+	}
+	// The clock starts once. A later close after resolve must not extend the
+	// reporter's access window; recalculating here would do exactly that.
+	if issue.TrackToken != "" && issue.TrackExpiresAt == "" {
+		if expires := issueTrackExpiry(result.Current, now); expires != "" {
+			patchData["track_expires_at"] = expires
+		}
 	}
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue walked but state patch failed", "id", id, "error", err)
@@ -1072,10 +1093,16 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now().UTC()
 	patchData := map[string]any{
 		"state":         result.Current,
 		"reject_reason": motivo,
-		"updated_at":    time.Now().UTC().Format(time.RFC3339),
+		"updated_at":    now.Format(time.RFC3339),
+	}
+	if issue.TrackToken != "" && issue.TrackExpiresAt == "" {
+		if expires := issueTrackExpiry(result.Current, now); expires != "" {
+			patchData["track_expires_at"] = expires
+		}
 	}
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue rejected but patch failed", "id", id, "error", err)
@@ -1444,6 +1471,9 @@ type IssueDetailData struct {
 	AssetLocationName string
 	AssetMissing      bool // asset_id set but the asset could not be read
 	History           []IssueHistoryEntry
+	// TrackingURL is the public link of a QR report, resolved on read. Empty
+	// when the issue has no tracking token.
+	TrackingURL string
 }
 
 type issueActionVariant string
@@ -1753,6 +1783,47 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 			}
 		}
 
+		// The public link is only present for QR reports. It stays visible
+		// after expiry, but the copy action disappears: the operator needs to
+		// know why the reporter says the page does not open.
+		var trackingCard mi.Node
+		if data.TrackingURL != "" {
+			expired := issueTrackExpired(iss.TrackExpiresAt, now)
+			trackingCard = Card(t("issues.tracking.title"), func(b *mi.Builder) mi.Node {
+				children := []interface{}{
+					b.A(
+						mi.Href(data.TrackingURL),
+						mi.Target("_blank"),
+						mi.Class("block truncate font-mono text-sm text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"),
+						data.TrackingURL,
+					),
+					b.P(mi.Class("mt-2 text-xs text-gray-500 dark:text-gray-400"),
+						t("issues.tracking.hint")),
+				}
+				if expired {
+					children = append(children, b.P(
+						mi.Class("mt-3 text-xs text-red-600 dark:text-red-400"),
+						t("issues.tracking.expired"),
+					))
+				} else {
+					children = append(children, b.Div(
+						mi.Class("mt-3 flex flex-wrap items-center gap-2"),
+						Button(t("issue_qr.copy"), "secondary",
+							mi.Type("button"),
+							mi.Attr("onclick", issueQRCodeCopyScript(data.TrackingURL)),
+						)(b),
+					))
+					if at := formatIssueTrackTime(iss.TrackExpiresAt); at != "" {
+						children = append(children, b.P(
+							mi.Class("mt-2 text-xs text-gray-500 dark:text-gray-400"),
+							t("issues.tracking.expires_at")+": "+at,
+						))
+					}
+				}
+				return b.Div(children...)
+			})(b)
+		}
+
 		// A case lists its children, each linking back to its own detail;
 		// the child's own page points here instead (no actions there).
 		var childrenCard mi.Node
@@ -1770,7 +1841,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 			})(b)
 		}
 
-		rightCol := []interface{}{childrenCard, slaCard, historyCard}
+		rightCol := []interface{}{childrenCard, slaCard, trackingCard, historyCard}
 		rightDivArgs := []interface{}{mi.Class("space-y-6")}
 		for _, n := range rightCol {
 			if n != nil {

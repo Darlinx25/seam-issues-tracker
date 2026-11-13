@@ -38,9 +38,47 @@ func TestQRReportKeysResolve(t *testing.T) {
 		"qr.report.error.contact_required",
 		"qr.report.error.description_required",
 		"qr.report.error.create_failed",
-		"qr.report.done_title",
-		"qr.report.done_message",
-		"qr.report.done_hint",
+		// The public tracking page, which replaced the old /done confirmation:
+		// the reporter follows the issue through an opaque token, and every
+		// label of that page must resolve in every locale.
+		"qr.track.title",
+		"qr.track.card_title",
+		"qr.track.new_title",
+		"qr.track.new_hint",
+		"qr.track.issue_number",
+		"qr.track.reported_at",
+		"qr.track.step.reported",
+		"qr.track.step.triaged",
+		"qr.track.step.in_progress",
+		"qr.track.step.resolved",
+		"qr.track.step.closed",
+		"qr.track.activity.title",
+		"qr.track.activity.empty",
+		"qr.track.activity.created",
+		"qr.track.activity.triage",
+		"qr.track.activity.start",
+		"qr.track.activity.hold",
+		"qr.track.activity.resume",
+		"qr.track.activity.resolve",
+		"qr.track.activity.close",
+		"qr.track.activity.reject",
+		"qr.track.activity.merge",
+		"qr.track.link.title",
+		"qr.track.link.hint",
+		"qr.track.link.warning",
+		"qr.track.link.copy",
+		"qr.track.link.copied",
+		"qr.track.error.not_found_title",
+		"qr.track.error.not_found_message",
+		"qr.track.error.expired_title",
+		"qr.track.error.expired_message",
+		"qr.track.duplicate_note",
+		"qr.track.duplicate_open",
+		// The operator-side card in the issue detail.
+		"issues.tracking.title",
+		"issues.tracking.hint",
+		"issues.tracking.expires_at",
+		"issues.tracking.expired",
 	}
 
 	for _, locale := range []string{"en", "es", "pt", "ja"} {
@@ -59,5 +97,8 @@ func TestQRReportKeysResolve(t *testing.T) {
 	}
 	if ja := tr.ForLocale("ja")("qr.report.title"); ja == tr.ForLocale("en")("qr.report.title") {
 		t.Errorf("ja still renders the English title %q", ja)
+	}
+	if en, es := tr.ForLocale("en")("qr.track.new_title"), tr.ForLocale("es")("qr.track.new_title"); en == es {
+		t.Errorf("en and es render the same tracking banner %q", en)
 	}
 }

@@ -118,7 +118,7 @@ func (h *UIHandler) canManageIssueGroups(r *http.Request) bool {
 // wrong guess here would break propagation silently. Revisit if the issues
 // table grows past a few thousand rows.
 func (h *UIHandler) listIssueLinks(ctx context.Context) ([]Issue, error) {
-	res, err := h.xoluClient.OQL(ctx, "SELECT id, title, state, machine_id, master_id FROM issues ORDER BY id ASC")
+	res, err := h.xoluClient.OQL(ctx, "SELECT id, title, state, machine_id, master_id, track_token, track_expires_at FROM issues ORDER BY id ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -129,11 +129,13 @@ func (h *UIHandler) listIssueLinks(ctx context.Context) ([]Issue, error) {
 			continue
 		}
 		out = append(out, Issue{
-			ID:        toInt64(row["id"]),
-			Title:     toString(row["title"]),
-			State:     toString(row["state"]),
-			MachineID: toInt64(row["machine_id"]),
-			MasterID:  masterID,
+			ID:             toInt64(row["id"]),
+			Title:          toString(row["title"]),
+			State:          toString(row["state"]),
+			MachineID:      toInt64(row["machine_id"]),
+			MasterID:       masterID,
+			TrackToken:     toString(row["track_token"]),
+			TrackExpiresAt: toString(row["track_expires_at"]),
 		})
 	}
 	return out, nil
@@ -151,7 +153,8 @@ func (h *UIHandler) propagateIssueTransition(ctx context.Context, master Issue, 
 		h.logger.Error("failed to load the children of a case", "id", master.ID, "error", err)
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	nowTime := time.Now().UTC()
+	now := nowTime.Format(time.RFC3339)
 	propagated := 0
 	for _, child := range links {
 		if child.MasterID != master.ID {
@@ -165,6 +168,11 @@ func (h *UIHandler) propagateIssueTransition(ctx context.Context, master Issue, 
 		patch := map[string]any{"state": result.Current, "updated_at": now}
 		for k, v := range extra {
 			patch[k] = v
+		}
+		if child.TrackToken != "" && child.TrackExpiresAt == "" {
+			if expires := issueTrackExpiry(result.Current, nowTime); expires != "" {
+				patch["track_expires_at"] = expires
+			}
 		}
 		if _, perr := h.xoluClient.Patch(ctx, "issues", child.ID, patch); perr != nil {
 			h.logger.Error("issue child walked but state patch failed", "id", child.ID, "case", master.ID, "error", perr)
