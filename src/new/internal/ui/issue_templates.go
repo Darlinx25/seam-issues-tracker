@@ -45,10 +45,12 @@ type IssueTemplate struct {
 const issueTemplatesEntity = "issue_templates"
 const issueTemplateAssignmentsEntity = "issue_template_assignments"
 
-// templateFieldTypes are the types offered by the row editor. Kept to
-// scalar widgets the formengine renders without extra configuration.
+// templateFieldTypes are the types offered by the row editor. Most map to
+// scalar widgets the formengine renders without extra configuration; "image"
+// is rendered by this module itself (see renderIssuePhotoField) so a report
+// can carry several photos of the asset before the issue exists.
 func templateFieldTypes() []string {
-	return []string{"text", "textarea", "number", "boolean", "date", "datetime"}
+	return []string{"text", "textarea", "number", "boolean", "date", "datetime", "image"}
 }
 
 // toMap normalises a stored JSON object into map[string]any, returning nil
@@ -293,6 +295,8 @@ func templateSchemaType(t string) (jsonType, format, input string) {
 		return "string", "date", "date"
 	case "datetime":
 		return "string", "date-time", "datetime-local"
+	case "image":
+		return "string", "", "image"
 	default:
 		return "string", "", "text"
 	}
@@ -307,7 +311,7 @@ func buildTemplateSchema(fields []TemplateField) []byte {
 	first := true
 	var required []string
 	for _, f := range fields {
-		if f.Key == "" {
+		if f.Key == "" || isIssuePhotoField(f) {
 			continue
 		}
 		jsonType, format, input := templateSchemaType(f.Type)
@@ -350,10 +354,89 @@ func buildTemplateSchema(fields []TemplateField) []byte {
 
 // renderTemplateFields renders a resolved template's custom fields with the
 // formengine. values/errors may be nil (the HTMX partial, and first render).
+// The "image" fields are not part of the formengine schema: they are rendered
+// here, in order, with the same card/form styling as the rest of the form.
 func (h *UIHandler) renderTemplateFields(ctx context.Context, tpl *IssueTemplate, values map[string]any, errors map[string]string, csrf string) mi.H {
 	formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 	rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrf, Module: "issues", Form: "issue-template"}
-	return formEng.Render(ctx, buildTemplateSchema(tpl.Fields), values, errors, rc)
+	t := h.translateFunc(nil)
+
+	return func(b *mi.Builder) mi.Node {
+		var children []interface{}
+		var pending []TemplateField
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			children = append(children, formEng.Render(ctx, buildTemplateSchema(pending), values, errors, rc)(b))
+			pending = nil
+		}
+		for _, f := range tpl.Fields {
+			if isIssuePhotoField(f) {
+				flush()
+				children = append(children, renderIssuePhotoField(b, f, errors[f.Key], t))
+				continue
+			}
+			pending = append(pending, f)
+		}
+		flush()
+		return b.Div(append([]interface{}{mi.Class("space-y-2")}, children...)...)
+	}
+}
+
+// renderIssuePhotoField renders the multi-photo picker of one "image" template
+// field. The native file input is the real control: without JavaScript the
+// browser still submits every selected file, and the small script in
+// web/static/js/issue-photo-field.js only adds the thumbnail preview and the
+// per-photo remove button on top of it.
+func renderIssuePhotoField(b *mi.Builder, f TemplateField, errMsg string, t func(key string, args ...any) string) mi.Node {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
+	label := f.Label
+	if label == "" {
+		label = f.Key
+	}
+	inputID := "issue-photo-" + f.Key
+	inputAttrs := []mi.Attribute{
+		mi.Type("file"),
+		mi.ID(inputID),
+		mi.Name(issuePhotoFieldName(f.Key)),
+		mi.Attr("multiple", ""),
+		mi.Attr("accept", "image/*"),
+		mi.Class("absolute w-px h-px opacity-0 overflow-hidden"),
+		mi.Attr("data-issue-photo-input", ""),
+	}
+	if f.Required {
+		inputAttrs = append(inputAttrs, mi.Required())
+	}
+	var requiredMark mi.Node = b.Text("")
+	if f.Required {
+		requiredMark = b.Span(mi.Class("text-red-500"), " *")
+	}
+	return b.Div(mi.Class("space-y-2"), mi.Attr("data-issue-photo-field", ""),
+		b.Label(mi.For(inputID), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+			b.Text(label),
+			requiredMark,
+		),
+		b.Div(mi.Class("grid grid-cols-2 sm:grid-cols-3 gap-2"), mi.Attr("data-issue-photo-preview", "")),
+		b.Label(mi.For(inputID),
+			mi.Class("flex flex-col items-center gap-1.5 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 px-4 py-5 text-center cursor-pointer hover:border-indigo-500 dark:hover:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2 dark:focus-within:ring-indigo-400 dark:focus-within:ring-offset-gray-800 transition-colors"),
+			b.Span(mi.Class("material-icons text-indigo-600 dark:text-indigo-400"), "add_a_photo"),
+			b.Span(mi.Class("text-sm font-medium text-indigo-600 dark:text-indigo-400"), t("field.image.add")),
+			b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("field.image.drag_hint")),
+			b.Input(inputAttrs...),
+		),
+		b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issues.photos.hint")),
+		issuePhotoFieldError(b, errMsg),
+	)
+}
+
+func issuePhotoFieldError(b *mi.Builder, message string) mi.Node {
+	if message == "" {
+		return b.Text("")
+	}
+	return b.P(mi.Class("mt-1 text-xs text-red-600 dark:text-red-400"), message)
 }
 
 // loadCurrentTemplate loads the current (is_current=1, not deleted) version

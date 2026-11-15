@@ -120,6 +120,7 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 			// One form: the two cards and the submit travel together, so the
 			// scanner answers everything and sends once.
 			b.Form(mi.Method("POST"), mi.Action("/s/"+data.Code+"/report"), mi.Class("space-y-4"),
+				mi.Attr("enctype", "multipart/form-data"),
 				Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
 					return b.Div(mi.Class("space-y-4"),
 						issueQRReportTextInput(b, "contact_name", t("qr.report.contact_name"), "text", data.ContactName, data.Errors["contact_name"]),
@@ -137,6 +138,7 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 					t("qr.report.submit"),
 				),
 			),
+			b.Script(mi.Src("/static/js/issue-photo-field.js"), mi.Defer()),
 		)
 	}
 }

@@ -154,7 +154,7 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
+	if err := parseIssueFormRequest(r); err != nil {
 		h.page.RenderPublicError(w, http.StatusBadRequest, t("error.bad_request"), t("error.invalid_form_data"))
 		return
 	}
@@ -180,12 +180,19 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 	formData := map[string]any{}
 	if tpl != nil {
 		for _, f := range tpl.Fields {
+			if isIssuePhotoField(f) {
+				continue
+			}
 			v := strings.TrimSpace(r.FormValue(f.Key))
 			formData[f.Key] = v
 			if f.Required && v == "" {
 				values.Errors[f.Key] = t("field.required")
 			}
 		}
+	}
+	photoUploads, photoErrors := h.prepareIssuePhotos(r, tpl, t)
+	for key, msg := range photoErrors {
+		values.Errors[key] = msg
 	}
 
 	if values.ContactName == "" {
@@ -286,10 +293,18 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		issueData["template_id"] = tpl.ID
 	}
 
-	if _, err := h.xoluClient.Create(ctx, "issues", issueData); err != nil {
+	entity, err := h.xoluClient.Create(ctx, "issues", issueData)
+	if err != nil {
 		h.logger.Error("failed to create the issue of an anonymous QR report", "asset_id", assetID, "error", err)
 		h.page.RenderPublicError(w, http.StatusInternalServerError, t("error.server_error"), t("qr.report.error.create_failed"))
 		return
+	}
+	if len(photoUploads) > 0 {
+		uploadedBy := values.ContactEmail
+		if uploadedBy == "" {
+			uploadedBy = values.ContactName
+		}
+		h.storeIssuePhotos(ctx, entity.ID, photoUploads, uploadedBy)
 	}
 
 	// The tracking page is addressed by the opaque token, never by the issue

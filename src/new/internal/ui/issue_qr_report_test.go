@@ -486,3 +486,65 @@ func TestIssueQRReport_MissingRequiredTemplateField(t *testing.T) {
 		t.Error("the template field must carry its required error")
 	}
 }
+
+// TestIssueQRReport_WithPhoto_UploadsBlobAndMetadata covers the anonymous
+// path: the scanner has no session, so the photos travel in the same
+// multipart POST as the report and are stored against the issue the code
+// created.
+func TestIssueQRReport_WithPhoto_UploadsBlobAndMetadata(t *testing.T) {
+	var created map[string]any
+	var blobKey string
+	var metadata map[string]any
+	qrPhotoResolver := func(query string) []map[string]any {
+		if strings.Contains(query, issueQRCodesEntity) {
+			return []map[string]any{{
+				"id": float64(1), "code": "AAAAAAAAAAAAAAAA", "asset_id": float64(5),
+				"asset_category": "critico", "active": true,
+			}}
+		}
+		return issuePhotoResolver(query)
+	}
+	routes := map[string]http.HandlerFunc{
+		"GET /api/v1/assets/5":   qrReportAsset("Baja", 3),
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) { templateOQL(w, r, qrPhotoResolver) },
+		"POST /api/v1/blob": func(w http.ResponseWriter, r *http.Request) {
+			blobKey = r.Header.Get("X-Blob-Key")
+			qrTestJSON(w, map[string]any{"key": blobKey, "sha256": "abc"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			created = qrTestDecodeBody(t, r)
+			oqlCreated(w, 31)
+		},
+		"POST /api/v1/seam_media_items": func(w http.ResponseWriter, r *http.Request) {
+			metadata = qrTestDecodeBody(t, r)
+			oqlCreated(w, 88)
+		},
+	}
+	qrReportFSM(routes)
+	server := mockOLU(t, routes)
+	defer server.Close()
+
+	h := newHandler(t, server)
+	req := newIssuePhotoUploadRequestAt(t, "/s/AAAAAAAAAAAAAAAA/report", map[string]string{
+		"contact_name": "Carolina Mendez", "contact_document": "4.512.873-6",
+		"contact_phone": "099 123 456", "contact_email": "carolina@correo.com",
+		"title": "Oil leak", "description": "Oil under the pump.",
+	}, issuePhotoFieldName("photo"), "leak.png", []byte(issuePhotoTestPNG))
+	rec := httptest.NewRecorder()
+	h.IssueQRReport(rec, req)
+
+	assertIssueTrackRedirect(t, rec, created)
+	if blobKey == "" {
+		t.Fatal("the QR report photo was never uploaded to xolu")
+	}
+	if metadata == nil {
+		t.Fatal("no seam_media_items row was written for the QR report")
+	}
+	if metadata["owner_field"] != "photo" || metadata["owner_type"] != issuePhotoOwnerType {
+		t.Errorf("expected the photo owned by the issue field 'photo', got %v/%v",
+			metadata["owner_type"], metadata["owner_field"])
+	}
+	if metadata["uploaded_by"] != "carolina@correo.com" {
+		t.Errorf("expected uploaded_by to carry the anonymous contact email, got %v", metadata["uploaded_by"])
+	}
+}

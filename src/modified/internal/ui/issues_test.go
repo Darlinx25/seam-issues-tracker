@@ -3146,3 +3146,52 @@ func TestIssueStart_WithoutAssigneeAnyoneCan(t *testing.T) {
 		t.Error("expected an issue without a responsible to be startable by anybody")
 	}
 }
+
+// TestIssueDetail_ShowsTemplatePhotos confirms the detail page reads the
+// seam_media_items rows of the issue and renders them as a gallery, only in
+// the internal detail (the public tracking page stays photo-free).
+func TestIssueDetail_ShowsTemplatePhotos(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Pump leaking", "template_id": float64(9),
+				"form_data": map[string]any{"serial_no": "SN-1"},
+			})
+		},
+		"GET /api/v1/issue_templates/9": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(photoTemplateRow())
+		},
+		"POST /api/v1/oql": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(query string) []map[string]any {
+				if !strings.Contains(query, issuePhotosEntity) {
+					return nil
+				}
+				return []map[string]any{{
+					"id": float64(77), "owner_type": issuePhotoOwnerType, "owner_id": float64(1),
+					"owner_field": "photo", "blob_key": "issue-1-photo-abc", "content_type": "image/png",
+					"size_bytes": float64(12), "position": float64(0),
+				}}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/issues/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	h.IssueDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/gallery/blob?key=issue-1-photo-abc") {
+		t.Error("expected the detail page to link the stored photo through the blob proxy")
+	}
+	if strings.Contains(body, "SN-1") == false {
+		t.Error("expected the text field of the same template to keep rendering")
+	}
+}

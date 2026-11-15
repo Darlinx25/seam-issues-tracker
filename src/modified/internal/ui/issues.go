@@ -682,7 +682,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
 	ctx := r.Context()
 
-	if err := r.ParseForm(); err != nil {
+	if err := parseIssueFormRequest(r); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
 		return
 	}
@@ -712,12 +712,19 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	fieldErrors := map[string]string{}
 	if tpl != nil {
 		for _, f := range tpl.Fields {
+			if isIssuePhotoField(f) {
+				continue
+			}
 			v := r.FormValue(f.Key)
 			formData[f.Key] = v
 			if f.Required && strings.TrimSpace(v) == "" {
 				fieldErrors[f.Key] = t("field.required")
 			}
 		}
+	}
+	photoUploads, photoErrors := h.prepareIssuePhotos(r, tpl, t)
+	for key, msg := range photoErrors {
+		fieldErrors[key] = msg
 	}
 
 	errors := map[string]string{}
@@ -816,6 +823,14 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(photoUploads) > 0 {
+		uploadedBy := ""
+		if currentUser != nil {
+			uploadedBy = currentUser.Email
+		}
+		h.storeIssuePhotos(ctx, entity.ID, photoUploads, uploadedBy)
+	}
+
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(entity.ID, 10), http.StatusSeeOther)
 }
 
@@ -895,12 +910,21 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 		if tplEntity, err := h.xoluClient.Get(ctx, issueTemplatesEntity, issue.TemplateID); err == nil {
 			tpl := issueTemplateFromRow(tplEntity.Data)
 			data.TemplateName = tpl.Name
+			var photos map[string][]mediaItem
+			if len(issuePhotoFields(&tpl)) > 0 {
+				photos = h.listIssuePhotos(ctx, issue.ID)
+			}
 			for _, f := range tpl.Fields {
-				data.FormFields = append(data.FormFields, IssueFormField{
+				field := IssueFormField{
 					Key:   f.Key,
 					Label: f.Label,
+					Type:  f.Type,
 					Value: toString(issue.FormData[f.Key]),
-				})
+				}
+				if isIssuePhotoField(f) {
+					field.Photos = photos[f.Key]
+				}
+				data.FormFields = append(data.FormFields, field)
 			}
 		}
 	}
@@ -1303,18 +1327,22 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 				if data.TemplateFieldsContent != nil {
 					tplFields = append(tplFields, data.TemplateFieldsContent(b))
 				}
-				return b.Form(mi.Class("space-y-4"), mi.Method("post"), mi.Action("/issues"),
-					data.FormContent(b),
-					b.Div(tplFields...),
-					issueSLAEstimate(resolutionMinutes, priority, t)(b),
-					b.Div(mi.Class("flex justify-end gap-3 pt-4"),
-						b.A(mi.Href("/issues"), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
-							t("action.cancel"),
-						),
-						b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
-							t("issues.action.create"),
+				return b.Div(
+					b.Form(mi.Class("space-y-4"), mi.Method("post"), mi.Action("/issues"),
+						mi.Attr("enctype", "multipart/form-data"),
+						data.FormContent(b),
+						b.Div(tplFields...),
+						issueSLAEstimate(resolutionMinutes, priority, t)(b),
+						b.Div(mi.Class("flex justify-end gap-3 pt-4"),
+							b.A(mi.Href("/issues"), mi.Class("px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg font-medium hover:bg-gray-50 dark:hover:bg-gray-700"),
+								t("action.cancel"),
+							),
+							b.Button(mi.Type("submit"), mi.Class("px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"),
+								t("issues.action.create"),
+							),
 						),
 					),
+					b.Script(mi.Src("/static/js/issue-photo-field.js"), mi.Defer()),
 				)
 			})(b),
 		)
@@ -1417,11 +1445,14 @@ func IssueRejectPage(data IssueRejectData, t func(key string, args ...any) strin
 }
 
 // IssueFormField is one resolved custom-template field for display: label
-// shown, key used, and the value captured at creation.
+// shown, key used, the widget type, and the value captured at creation. Photo
+// fields carry their gallery instead of a text value.
 type IssueFormField struct {
-	Key   string
-	Label string
-	Value string
+	Key    string
+	Label  string
+	Type   string
+	Value  string
+	Photos []mediaItem
 }
 
 // IssueHistoryEntry is one step of an issue's lifecycle as shown in the
@@ -1576,6 +1607,13 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					label := f.Label
 					if label == "" {
 						label = f.Key
+					}
+					if f.Type == "image" {
+						fieldRows = append(fieldRows, b.Div(mi.Class("px-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
+							b.Span(mi.Class("block text-sm text-gray-500 dark:text-gray-400"), label),
+							renderIssuePhotoThumbnails(b, f.Photos, label, t),
+						))
+						continue
 					}
 					fieldRows = append(fieldRows, b.Div(mi.Class("flex items-center justify-between px-3 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
 						b.Span(mi.Class("text-sm text-gray-500 dark:text-gray-400"), label),
