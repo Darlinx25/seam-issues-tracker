@@ -244,15 +244,20 @@ func (h *UIHandler) IssueQRCodesList(w http.ResponseWriter, r *http.Request) {
 // IssueQRCodeAdminRevoke handles POST /issue-qr-codes/{id}/revoke.
 func (h *UIHandler) IssueQRCodeAdminRevoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id := extractPathID(r.URL.Path, "/issue-qr-codes/")
+	if perr := r.ParseForm(); perr != nil {
+		http.Redirect(w, r, "/issue-qr-codes?err=revoke_failed", http.StatusSeeOther)
+		return
+	}
 	back := "/issue-qr-codes"
-	if ref := r.Referer(); ref != "" {
+	if v := strings.TrimSpace(r.FormValue("return_to")); v != "" && strings.HasPrefix(v, "/issue-qr-codes") {
+		back = v
+	} else if ref := r.Referer(); ref != "" {
 		if u, perr := url.Parse(ref); perr == nil && strings.HasPrefix(u.Path, "/issue-qr-codes") {
 			back = u.RequestURI()
 		}
 	}
-	if err != nil || id <= 0 {
+	if id <= 0 {
 		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
@@ -451,14 +456,21 @@ func issueQRAdminTable(data IssueQRCodesListData, t func(string, ...any) string)
 		for _, row := range data.Rows {
 			rows = append(rows, issueQRAdminTableRow(row, data.CSRFToken, returnTo, t)(b))
 		}
-		return b.Form(mi.Method("post"), mi.Action("/issue-qr-codes/revoke"), mi.Class("space-y-3"),
-			b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
-			b.Input(mi.Type("hidden"), mi.Name("return_to"), mi.Value(returnTo)),
+		return b.Div(mi.Class("space-y-3"),
+			b.Form(mi.ID("issue-qr-bulk-revoke-form"), mi.Method("post"), mi.Action("/issue-qr-codes/revoke"), mi.Class("hidden"),
+				b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+				b.Input(mi.Type("hidden"), mi.Name("return_to"), mi.Value(returnTo)),
+			),
 			b.Div(mi.Class("flex items-center justify-between"),
 				b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issue_qr_admin.total", data.Total)),
 				b.Button(mi.Type("submit"),
+					mi.Attr("form", "issue-qr-bulk-revoke-form"),
 					mi.Class("px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium"),
-					mi.Attr("onclick", "return confirm('"+jsEscape(t("issue_qr_admin.confirm_bulk"))+"')"),
+					mi.Attr("onclick", issueQRAdminConfirmOnclick(
+						t("issue_qr_admin.confirm_bulk"),
+						t("issue_qr_admin.confirm_bulk_title"),
+						t("issue_qr_admin.confirm_ok"),
+					)),
 					t("issue_qr_admin.revoke_selected"),
 				),
 			),
@@ -483,7 +495,6 @@ func issueQRAdminTable(data IssueQRCodesListData, t func(string, ...any) string)
 }
 
 func issueQRAdminTableRow(row issueQRAdminRow, csrfToken, returnTo string, t func(string, ...any) string) mi.H {
-	_ = returnTo
 	return func(b *mi.Builder) mi.Node {
 		status := Badge(t("issue_qr_admin.status.revoked"), "error")
 		if row.Active {
@@ -503,6 +514,7 @@ func issueQRAdminTableRow(row issueQRAdminRow, csrfToken, returnTo string, t fun
 					return b.Span(mi.Class("text-gray-300"), "-")
 				}
 				return b.Input(mi.Type("checkbox"), mi.Name("ids"), mi.Value(strconv.FormatInt(row.ID, 10)),
+					mi.Attr("form", "issue-qr-bulk-revoke-form"),
 					mi.Class("rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"))
 			}(),
 		)
@@ -513,9 +525,14 @@ func issueQRAdminTableRow(row issueQRAdminRow, csrfToken, returnTo string, t fun
 				}
 				return b.Form(mi.Method("post"), mi.Action("/issue-qr-codes/"+strconv.FormatInt(row.ID, 10)+"/revoke"), mi.Class("inline"),
 					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(csrfToken)),
+					b.Input(mi.Type("hidden"), mi.Name("return_to"), mi.Value(returnTo)),
 					b.Button(mi.Type("submit"),
 						mi.Class("px-2.5 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800"),
-						mi.Attr("onclick", "return confirm('"+jsEscape(t("issue_qr_admin.confirm_revoke"))+"')"),
+						mi.Attr("onclick", issueQRAdminConfirmOnclick(
+							t("issue_qr_admin.confirm_revoke"),
+							t("issue_qr_admin.confirm_revoke_title"),
+							t("issue_qr_admin.confirm_ok"),
+						)),
 						t("issue_qr_admin.revoke"),
 					),
 				)
@@ -578,9 +595,7 @@ func issueQRAdminPagination(f IssueQRCodeAdminFilters, totalPages, total int, t 
 	}
 }
 
-func jsEscape(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	s = strings.ReplaceAll(s, "\n", " ")
-	return s
+func issueQRAdminConfirmOnclick(message, title, okLabel string) string {
+	return "event.preventDefault();SeamConfirm.showForm(this.form," + jsQuote(message) +
+		",{danger:true,title:" + jsQuote(title) + ",okLabel:" + jsQuote(okLabel) + "})"
 }
