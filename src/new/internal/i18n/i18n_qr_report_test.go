@@ -79,6 +79,18 @@ func TestQRReportKeysResolve(t *testing.T) {
 		"issues.tracking.hint",
 		"issues.tracking.expires_at",
 		"issues.tracking.expired",
+		// The group-mode selector on the grouping page and the notice shown
+		// on a child's public page when the case chose the "notice" mode.
+		"issues.group.track_mode",
+		"issues.group.track_mode.hint",
+		"issues.group.track_mode.independent",
+		"issues.group.track_mode.case",
+		"issues.group.track_mode.notice",
+		"qr.track.case_note",
+		"qr.track.case_open",
+		"qr.track.case_banner_title",
+		"qr.track.case_banner_hint",
+		"qr.track.case_yours",
 	}
 
 	for _, locale := range []string{"en", "es", "pt", "ja"} {

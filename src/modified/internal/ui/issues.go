@@ -48,6 +48,10 @@ type Issue struct {
 	// only the first time the issue reaches a closing state; later closing
 	// transitions must not extend it.
 	TrackExpiresAt string
+	// TrackGroupMode is chosen by the operator when an issue becomes a case.
+	// It governs the public tracking links of that case's children. Empty
+	// means the case predates the setting, so children keep their own page.
+	TrackGroupMode string
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
 	Assignee       int64
@@ -88,6 +92,7 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		Channel:                  toString(e.Data["channel"]),
 		TrackToken:               toString(e.Data["track_token"]),
 		TrackExpiresAt:           toString(e.Data["track_expires_at"]),
+		TrackGroupMode:           toString(e.Data["track_group_mode"]),
 		CreatedAt:                toString(e.Data["created_at"]),
 		ReportedBy:               toInt64(e.Data["reported_by"]),
 		Assignee:                 toInt64(e.Data["assignee"]),

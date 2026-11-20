@@ -56,6 +56,30 @@ const (
 	issueTrackTimeLayout = "02/01/2006 15:04"
 )
 
+// The group mode is written on the case by the grouping form and read by the
+// public tracking page. Empty (cases created before this setting) keeps the
+// original behaviour: every issue has its own tracking page.
+const (
+	issueTrackGroupModeIndependent = "independent"
+	issueTrackGroupModeCase        = "case"
+	issueTrackGroupModeNotice      = "notice"
+)
+
+var issueTrackGroupModes = []string{
+	issueTrackGroupModeIndependent,
+	issueTrackGroupModeCase,
+	issueTrackGroupModeNotice,
+}
+
+func issueTrackGroupModeOrDefault(mode string) string {
+	for _, known := range issueTrackGroupModes {
+		if mode == known {
+			return mode
+		}
+	}
+	return issueTrackGroupModeIndependent
+}
+
 // issueTrackSteps is the progress bar shown to the reporter. It deliberately
 // omits on_hold, rejected and duplicate: on_hold maps to the in_progress step,
 // and the terminal exceptions hide the bar and rely on the state badge.
@@ -276,6 +300,17 @@ type IssueTrackData struct {
 	TrackingURL  string
 	Activity     []IssueTrackActivity
 	DuplicateURL string
+	// In the "notice" mode the child keeps its own page and explains that it
+	// belongs to a case. The case may have no public token of its own, in
+	// which case the notice has no link.
+	PartOfCase bool
+	CaseURL    string
+	// In the "case" mode the reporter is shown the case's page under their
+	// own token. These fields explain the substitution and let them spot
+	// their own report in the list of issues grouped by the case.
+	IsCase       bool
+	ChildID      int64
+	CaseChildren []Issue
 }
 
 // IssueTrack handles GET /track/{token}. The token is the only identity the
@@ -323,10 +358,56 @@ func (h *UIHandler) IssueTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The case owns the group policy. It is resolved on every request so a
+	// detached child immediately gets its own page again, and the child keeps
+	// its own expiry: it is the token the reporter actually holds.
+	caseURL := ""
+	partOfCase := false
+	isCase := false
+	caseChildren := []Issue{}
+	childID := issue.ID
+	if issue.MasterID > 0 {
+		masterEntity, merr := h.xoluClient.Get(ctx, "issues", issue.MasterID)
+		if merr != nil {
+			h.logger.Error("failed to load the case of a tracked issue", "id", issue.ID, "case", issue.MasterID, "error", merr)
+		} else {
+			master := issueFromEntity(masterEntity)
+			switch issueTrackGroupModeOrDefault(master.TrackGroupMode) {
+			case issueTrackGroupModeCase:
+				// Keep the URL on the child's token: the case may not have a
+				// token of its own, and this link must survive an ungroup.
+				isCase = true
+				issue = master
+				// Explain the substitution: without this banner the reporter
+				// thinks they followed the wrong link. The list also lets them
+				// recognize the report they actually hold.
+				if links, lerr := h.listIssueLinks(ctx); lerr != nil {
+					h.logger.Error("failed to load the children of a tracked case", "id", master.ID, "error", lerr)
+				} else {
+					for _, link := range links {
+						if link.MasterID == master.ID {
+							caseChildren = append(caseChildren, link)
+						}
+					}
+				}
+			case issueTrackGroupModeNotice:
+				partOfCase = true
+				if master.TrackToken != "" {
+					caseURL = h.issueTrackingLink(master.TrackToken)
+				}
+			}
+		}
+	}
+
 	data := IssueTrackData{
-		Issue:       issue,
-		IsNew:       r.URL.Query().Get("new") == "1",
-		TrackingURL: h.issueTrackingLink(issue.TrackToken),
+		Issue:        issue,
+		IsNew:        r.URL.Query().Get("new") == "1",
+		TrackingURL:  h.issueTrackingLink(token),
+		PartOfCase:   partOfCase,
+		CaseURL:      caseURL,
+		IsCase:       isCase,
+		ChildID:      childID,
+		CaseChildren: caseChildren,
 	}
 
 	if issue.AssetID > 0 {
@@ -410,6 +491,58 @@ func issueTrackPage(data IssueTrackData, t func(key string, args ...any) string)
 						t("qr.track.new_hint")),
 				),
 			))
+		}
+
+		if data.IsCase {
+			banner := []interface{}{
+				mi.Class("px-4 py-3 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 space-y-2"),
+				b.Div(mi.Class("flex items-start gap-3"),
+					b.Span(mi.Class("material-icons text-indigo-600 dark:text-indigo-400"), "account_tree"),
+					b.Div(mi.Class("min-w-0"),
+						b.Div(mi.Class("text-sm font-semibold text-indigo-800 dark:text-indigo-300"), t("qr.track.case_banner_title")),
+						b.Div(mi.Class("text-xs text-indigo-700 dark:text-indigo-400"), t("qr.track.case_banner_hint")),
+					),
+				),
+			}
+			if len(data.CaseChildren) > 0 {
+				rows := make([]interface{}, 0, len(data.CaseChildren))
+				for _, child := range data.CaseChildren {
+					label := "#" + strconv.FormatInt(child.ID, 10)
+					if child.Title != "" {
+						label += " · " + child.Title
+					}
+					rowClass := "flex items-center justify-between gap-3 py-1.5 text-sm text-indigo-800 dark:text-indigo-200"
+					if child.ID == data.ChildID {
+						label += " · " + t("qr.track.case_yours")
+						rowClass = "flex items-center justify-between gap-3 py-1.5 px-2 rounded text-sm font-semibold text-indigo-900 dark:text-indigo-100 bg-indigo-100 dark:bg-indigo-800/50"
+					}
+					rows = append(rows, b.Div(
+						mi.Class(rowClass),
+						b.Span(mi.Class("min-w-0 truncate"), label),
+						issueStatusBadge(child.State, t)(b),
+					))
+				}
+				banner = append(banner, b.Div(append([]interface{}{mi.Class("border-t border-indigo-200 dark:border-indigo-800 pt-1")}, rows...)...))
+			}
+			children = append(children, b.Div(banner...))
+		}
+
+		if data.PartOfCase {
+			notice := []interface{}{
+				mi.Class("px-4 py-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex items-start gap-3"),
+				b.Span(mi.Class("material-icons text-amber-600 dark:text-amber-400"), "info"),
+				b.Div(mi.Class("min-w-0"),
+					b.Div(mi.Class("text-sm font-semibold text-amber-800 dark:text-amber-300"), t("qr.track.case_note")),
+				),
+			}
+			if data.CaseURL != "" {
+				notice = append(notice, b.A(
+					mi.Href(data.CaseURL),
+					mi.Class("mt-1 inline-block text-sm font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"),
+					t("qr.track.case_open"),
+				))
+			}
+			children = append(children, b.Div(notice...))
 		}
 
 		metaParts := []string{}

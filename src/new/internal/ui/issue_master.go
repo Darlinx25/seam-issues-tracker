@@ -220,6 +220,9 @@ type IssueGroupData struct {
 	Candidates []Issue
 	CSRFToken  string
 	Error      string
+	// TrackGroupMode is the public-tracking policy the operator is about to
+	// write on the case with this grouping action.
+	TrackGroupMode string
 }
 
 // groupableIssues lists the issues the picker may offer: not terminal, not
@@ -282,7 +285,10 @@ func (h *UIHandler) IssueGroupFormPage(w http.ResponseWriter, r *http.Request) {
 		h.Error403(w, r)
 		return
 	}
-	data := IssueGroupData{CSRFToken: h.GetCSRFToken(w, r)}
+	data := IssueGroupData{
+		CSRFToken:      h.GetCSRFToken(w, r),
+		TrackGroupMode: issueTrackGroupModeIndependent,
+	}
 	candidates, err := h.groupableIssues(r.Context())
 	if err != nil {
 		h.logger.Error("failed to load groupable issues", "error", err)
@@ -308,8 +314,14 @@ func (h *UIHandler) IssueGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trackMode := issueTrackGroupModeOrDefault(r.FormValue("track_group_mode"))
+
 	renderErr := func(msg string) {
-		data := IssueGroupData{CSRFToken: h.GetCSRFToken(w, r), Error: msg}
+		data := IssueGroupData{
+			CSRFToken:      h.GetCSRFToken(w, r),
+			Error:          msg,
+			TrackGroupMode: trackMode,
+		}
 		if candidates, err := h.groupableIssues(ctx); err == nil {
 			data.Candidates = candidates
 		}
@@ -358,7 +370,18 @@ func (h *UIHandler) IssueGroup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.logger.Info("issues grouped", "case", plan.Keep.ID, "children", len(plan.Join))
+	// Only the case carries the policy: children just point at it, so a
+	// detached child immediately falls back to its own tracking page.
+	if _, err := h.xoluClient.Patch(ctx, "issues", plan.Keep.ID, map[string]any{
+		"track_group_mode": trackMode,
+		"updated_at":       now,
+	}); err != nil {
+		h.logger.Error("issue case tracking mode patch failed", "id", plan.Keep.ID, "error", err)
+		renderErr(t("issues.group.error.failed"))
+		return
+	}
+
+	h.logger.Info("issues grouped", "case", plan.Keep.ID, "children", len(plan.Join), "track_mode", trackMode)
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(plan.Keep.ID, 10), http.StatusSeeOther)
 }
 
@@ -433,8 +456,28 @@ func IssueGroupPage(data IssueGroupData, t func(key string, args ...any) string)
 			list = b.Div(append([]interface{}{mi.Class("rounded-lg border border-gray-200 dark:border-gray-700")}, rows...)...)
 		}
 
+		modeAttrs := []interface{}{
+			mi.ID("track_group_mode"),
+			mi.Name("track_group_mode"),
+			mi.Class("w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-indigo-500"),
+		}
+		currentMode := issueTrackGroupModeOrDefault(data.TrackGroupMode)
+		for _, mode := range issueTrackGroupModes {
+			option := []interface{}{mi.Value(mode), b.Text(t("issues.group.track_mode." + mode))}
+			if mode == currentMode {
+				option = append(option, mi.Attr("selected", ""))
+			}
+			modeAttrs = append(modeAttrs, b.Option(option...))
+		}
+
 		body := []interface{}{
 			b.P(mi.Class("text-sm text-gray-600 dark:text-gray-400"), t("issues.group.keep_note")),
+			b.Div(mi.Class("rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-2"),
+				b.Label(mi.For("track_group_mode"), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+					t("issues.group.track_mode")),
+				b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issues.group.track_mode.hint")),
+				b.Select(modeAttrs...),
+			),
 		}
 		if data.Error != "" {
 			body = append(body, b.Div(

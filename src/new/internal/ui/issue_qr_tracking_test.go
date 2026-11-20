@@ -207,6 +207,175 @@ func TestIssueTrack_RendersProgressActivityAndLink(t *testing.T) {
 	}
 }
 
+// issueTrackGroupPage renders a child's public page against a mocked case and
+// reports how many times the case was fetched. The child always holds the
+// token in the URL; the case only supplies the policy.
+func issueTrackGroupPage(t *testing.T, childMasterID int64, caseData map[string]any) (string, int) {
+	t.Helper()
+	caseGets := 0
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			q := qrTestQuery(t, r)
+			if strings.Contains(q, "WHERE track_token") {
+				row := map[string]any{
+					"id":          float64(77),
+					"title":       "Child oil leak",
+					"state":       "in_progress",
+					"machine_id":  float64(7),
+					"track_token": issueTrackTestToken,
+					"created_at":  "2026-11-10T09:40:00Z",
+				}
+				if childMasterID > 0 {
+					row["master_id"] = float64(childMasterID)
+				}
+				qrTestRows(w, []map[string]any{row})
+				return
+			}
+			// listIssueLinks: the issues attached to the case.
+			if childMasterID > 0 {
+				qrTestRows(w, []map[string]any{
+					{"id": float64(77), "title": "Child oil leak", "state": "in_progress", "master_id": float64(5)},
+					{"id": float64(78), "title": "Sibling pump noise", "state": "reported", "master_id": float64(5)},
+				})
+				return
+			}
+			qrTestRows(w, nil)
+		},
+		"GET /api/v1/issues/5": func(w http.ResponseWriter, r *http.Request) {
+			caseGets++
+			qrTestJSON(w, caseData)
+		},
+		"GET /api/v2/fsm/machine/7/history": func(w http.ResponseWriter, r *http.Request) {
+			qrTestJSON(w, map[string]any{"machine": float64(7), "entries": []map[string]any{}})
+		},
+		"GET /api/v2/fsm/machine/9/history": func(w http.ResponseWriter, r *http.Request) {
+			qrTestJSON(w, map[string]any{"machine": float64(9), "entries": []map[string]any{}})
+		},
+	})
+	defer server.Close()
+
+	h := newHandler(t, server)
+	req := httptest.NewRequest("GET", "/track/"+issueTrackTestToken, nil)
+	req.SetPathValue("token", issueTrackTestToken)
+	rec := httptest.NewRecorder()
+	h.IssueTrack(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tracking page must render, got %d: %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String(), caseGets
+}
+
+func TestIssueTrack_GroupModeCase_ShowsCaseUnderChildToken(t *testing.T) {
+	body, gets := issueTrackGroupPage(t, 5, map[string]any{
+		"id":               float64(5),
+		"title":            "Case pump failure",
+		"state":            "resolved",
+		"machine_id":       float64(9),
+		"track_group_mode": issueTrackGroupModeCase,
+		"created_at":       "2026-11-09T08:00:00Z",
+	})
+	if gets != 1 {
+		t.Errorf("case fetched %d times, want 1", gets)
+	}
+	for _, want := range []string{
+		"Case pump failure",
+		"qr.track.step.resolved",
+		"qr.track.case_banner_title",
+		"qr.track.case_banner_hint",
+		"Child oil leak",
+		"qr.track.case_yours",
+		"Sibling pump noise",
+		issueTrackTestToken,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("tracking page must contain %q", want)
+		}
+	}
+	// The case replaces the details; the child's title appears only once, in
+	// the banner, marked as the report this token belongs to.
+	if n := strings.Count(body, "Child oil leak"); n != 1 {
+		t.Errorf("child title appears %d times, want only in the case banner", n)
+	}
+}
+
+func TestIssueTrack_GroupModeNotice_ShowsNoteAndLink(t *testing.T) {
+	const caseToken = "BCDEFGHIJKLMNOPQRSTUVWXYZA"
+	body, gets := issueTrackGroupPage(t, 5, map[string]any{
+		"id":               float64(5),
+		"title":            "Case pump failure",
+		"state":            "in_progress",
+		"track_token":      caseToken,
+		"track_group_mode": issueTrackGroupModeNotice,
+	})
+	if gets != 1 {
+		t.Errorf("case fetched %d times, want 1", gets)
+	}
+	for _, want := range []string{
+		"Child oil leak",
+		"qr.track.case_note",
+		"qr.track.case_open",
+		issueTrackLinkPrefix + caseToken,
+		issueTrackTestToken,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("tracking page must contain %q", want)
+		}
+	}
+}
+
+func TestIssueTrack_GroupModeNotice_WithoutCaseToken_ShowsNoteOnly(t *testing.T) {
+	body, _ := issueTrackGroupPage(t, 5, map[string]any{
+		"id":               float64(5),
+		"title":            "Case pump failure",
+		"state":            "in_progress",
+		"track_group_mode": issueTrackGroupModeNotice,
+	})
+	if !strings.Contains(body, "qr.track.case_note") {
+		t.Error("notice mode must show the case note even without a case token")
+	}
+	if strings.Contains(body, "qr.track.case_open") {
+		t.Error("notice mode must not offer a link when the case has no token")
+	}
+	if strings.Contains(body, "qr.track.case_banner_title") {
+		t.Error("notice mode must not show the grouped-case banner")
+	}
+}
+
+func TestIssueTrack_GroupModeIndependentOrInvalid_ShowsChild(t *testing.T) {
+	for _, mode := range []string{issueTrackGroupModeIndependent, "bogus", ""} {
+		t.Run(mode, func(t *testing.T) {
+			body, gets := issueTrackGroupPage(t, 5, map[string]any{
+				"id":               float64(5),
+				"title":            "Case pump failure",
+				"state":            "in_progress",
+				"track_group_mode": mode,
+			})
+			if gets != 1 {
+				t.Errorf("case must be read to obtain the mode, got %d fetches", gets)
+			}
+			if !strings.Contains(body, "Child oil leak") {
+				t.Error("independent/invalid mode must keep the child's page")
+			}
+			if strings.Contains(body, "qr.track.case_note") {
+				t.Error("independent/invalid mode must not show the case notice")
+			}
+			if strings.Contains(body, "qr.track.case_banner_title") {
+				t.Error("independent/invalid mode must not show the grouped-case banner")
+			}
+		})
+	}
+}
+
+func TestIssueTrack_NoCase_DoesNotFetchOne(t *testing.T) {
+	body, gets := issueTrackGroupPage(t, 0, map[string]any{"id": float64(5), "title": "Case pump failure"})
+	if gets != 0 {
+		t.Errorf("a childless issue must not fetch a case, got %d fetches", gets)
+	}
+	if !strings.Contains(body, "Child oil leak") {
+		t.Error("the issue's own page must render")
+	}
+}
+
 func TestIssueTrack_ExpiredLinkReturnsGone(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{
 		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {

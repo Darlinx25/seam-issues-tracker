@@ -173,6 +173,31 @@ func TestIssueGroupForm_ListsOnlyGroupableIssues(t *testing.T) {
 	}
 }
 
+func TestIssueGroupForm_ShowsTrackModeSelector(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				return []map[string]any{issueGroupRow(1, "A", "reported", 5, 0)}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	body := getIssueGroupPageAs(t, h.IssueGroupFormPage, "admin").Body.String()
+	for _, want := range []string{
+		`name="track_group_mode"`,
+		`value="` + issueTrackGroupModeIndependent + `"`,
+		`value="` + issueTrackGroupModeCase + `"`,
+		`value="` + issueTrackGroupModeNotice + `"`,
+		"issues.group.track_mode",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected the picker to contain %q", want)
+		}
+	}
+}
+
 // --- Grouping ---
 
 func TestIssueGroup_Success_LinksChildrenToOldest(t *testing.T) {
@@ -191,8 +216,15 @@ func TestIssueGroup_Success_LinksChildrenToOldest(t *testing.T) {
 	rec := postIssueGroupFormAs(t, h.IssueGroup, url.Values{"ids": {"3", "1", "2"}}, "admin")
 	assertRedirectsTo(t, rec, "/issues/1")
 
-	if _, ok := patched[1]; ok {
-		t.Error("the case itself must not be patched")
+	caseBody, ok := patched[1]
+	if !ok {
+		t.Fatal("the case was never patched with the tracking mode")
+	}
+	if got := caseBody["track_group_mode"]; got != issueTrackGroupModeIndependent {
+		t.Errorf("case track_group_mode = %v, want default %q", got, issueTrackGroupModeIndependent)
+	}
+	if _, ok := caseBody["master_id"]; ok {
+		t.Error("the case must not receive a master_id")
 	}
 	for _, id := range []int64{2, 3} {
 		body, ok := patched[id]
@@ -202,6 +234,53 @@ func TestIssueGroup_Success_LinksChildrenToOldest(t *testing.T) {
 		if body["master_id"] != 1.0 {
 			t.Errorf("issue %d master_id = %v, want 1", id, body["master_id"])
 		}
+	}
+}
+
+func TestIssueGroup_StoresChosenTrackMode(t *testing.T) {
+	for _, mode := range issueTrackGroupModes {
+		t.Run(mode, func(t *testing.T) {
+			patched := map[int64]map[string]any{}
+			server := mockOLU(t, map[string]http.HandlerFunc{
+				"GET /api/v1/issues/1":   groupEntity(map[string]any{"id": float64(1), "title": "A", "state": "reported", "asset_id": float64(5)}),
+				"GET /api/v1/issues/2":   groupEntity(map[string]any{"id": float64(2), "title": "B", "state": "reported", "asset_id": float64(5)}),
+				"PATCH /api/v1/issues/1": groupPatchRecorder(patched, 1),
+				"PATCH /api/v1/issues/2": groupPatchRecorder(patched, 2),
+			})
+			defer server.Close()
+			h := newHandler(t, server)
+
+			rec := postIssueGroupFormAs(t, h.IssueGroup,
+				url.Values{"ids": {"1", "2"}, "track_group_mode": {mode}}, "admin")
+			assertRedirectsTo(t, rec, "/issues/1")
+
+			if got := patched[1]["track_group_mode"]; got != mode {
+				t.Errorf("case track_group_mode = %v, want %q", got, mode)
+			}
+			if _, ok := patched[2]["track_group_mode"]; ok {
+				t.Error("children must not carry the group policy")
+			}
+		})
+	}
+}
+
+func TestIssueGroup_InvalidTrackModeFallsBackToIndependent(t *testing.T) {
+	patched := map[int64]map[string]any{}
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1":   groupEntity(map[string]any{"id": float64(1), "title": "A", "state": "reported", "asset_id": float64(5)}),
+		"GET /api/v1/issues/2":   groupEntity(map[string]any{"id": float64(2), "title": "B", "state": "reported", "asset_id": float64(5)}),
+		"PATCH /api/v1/issues/1": groupPatchRecorder(patched, 1),
+		"PATCH /api/v1/issues/2": groupPatchRecorder(patched, 2),
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueGroupFormAs(t, h.IssueGroup,
+		url.Values{"ids": {"1", "2"}, "track_group_mode": {"bogus"}}, "admin")
+	assertRedirectsTo(t, rec, "/issues/1")
+
+	if got := patched[1]["track_group_mode"]; got != issueTrackGroupModeIndependent {
+		t.Errorf("case track_group_mode = %v, want %q", got, issueTrackGroupModeIndependent)
 	}
 }
 
