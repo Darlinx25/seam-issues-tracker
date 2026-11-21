@@ -59,7 +59,7 @@ go build -o /tmp/xolu-bin ./cmd/xolu
 
 ### Terminal 1: Start xolu
 ```
-/tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
+XOLU_API_V2_ENABLED=true /tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
 ```
 
 ### Terminal 2: Copy config and start seam
@@ -116,6 +116,46 @@ Requirements worth knowing:
 Changing either value requires restarting Seam (config is read at startup). The
 image already stored in xolu keeps encoding the old URL until it is re-rendered:
 use **Retry image** (or **Regenerate**) on the asset's QR card.
+
+### Terminal 4 (Optional): State-change notifications with seam-comm
+
+The new issue form has a **Receive state notifications** checkbox. When it is
+checked, the reporter's email is frozen on the issue and every successful
+lifecycle transition (`start`, `resolve`, `close`, `reject`) queues one email
+through [seam-comm](../../seam-comm/seam-comm). An empty `comms_url` disables
+the whole feature, so Seam still builds and runs without this service.
+
+Run seam-comm from its own repository root, on port **8091** (8090 belongs to
+the QR renderer):
+
+```
+go build -o seam-comm.exe ./cmd/seam-comm
+$env:SEAM_COMM_LISTEN_ADDR=":8091"
+$env:SEAM_COMM_PROVIDER_EMAIL="smtp"
+$env:SEAM_COMM_SMTP_ADDR="smtp.example.com:587"
+$env:SEAM_COMM_SMTP_FROM="alerts@example.com"
+.\seam-comm.exe serve
+```
+
+Check it is up:
+
+```
+curl.exe -s http://127.0.0.1:8091/healthz
+```
+
+Then set both keys in `config.json` (the merged `config.example.json` already
+ships these local defaults):
+
+```
+"comms_url":      "http://127.0.0.1:8091",
+"comms_api_key":  "dev-key",
+```
+
+Scope of this slice: **only email is delivered for real**. SMS and WhatsApp
+are simulated by seam-comm's fake provider (`GET /v1/dev/outbox`); the service
+keeps everything in memory, so restarting it loses the notification history.
+The notification is a best-effort side effect: if seam-comm is down, the issue
+still changes state and the failure is only written to the Seam log.
 
 ### Step 5 (Optional): Seed demo data
 

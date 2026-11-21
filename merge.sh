@@ -151,6 +151,13 @@ if [ -f "$SCRIPT_DIR/fix_qr_config.py" ]; then
         "$OUTPUT_DIR/internal/server/server.go" \
         "$OUTPUT_DIR/config.example.json"
 fi
+if [ -f "$SCRIPT_DIR/fix_seamcomm_config.py" ]; then
+    python3 "$SCRIPT_DIR/fix_seamcomm_config.py" \
+        "$OUTPUT_DIR/internal/config/config.go" \
+        "$OUTPUT_DIR/internal/ui/layout.go" \
+        "$OUTPUT_DIR/internal/server/server.go" \
+        "$OUTPUT_DIR/config.example.json"
+fi
 if [ -f "$SCRIPT_DIR/fix_server_sidebar.py" ] && [ -f "$OUTPUT_DIR/internal/server/server.go" ]; then
     python3 "$SCRIPT_DIR/fix_server_sidebar.py" "$OUTPUT_DIR/internal/server/server.go"
 fi

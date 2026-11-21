@@ -169,6 +169,7 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		ContactDocument: strings.TrimSpace(r.FormValue(qrReportContactDocument)),
 		ContactPhone:    strings.TrimSpace(r.FormValue(qrReportContactPhone)),
 		ContactEmail:    strings.TrimSpace(r.FormValue(qrReportContactEmail)),
+		NotifyState:     r.FormValue("notify_state") != "",
 		Title:           strings.TrimSpace(r.FormValue("title")),
 		Description:     strings.TrimSpace(r.FormValue("description")),
 		Errors:          map[string]string{},
@@ -266,6 +267,12 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		"asset_category": values.AssetCategory,
 		"created_at":     now.Format(time.RFC3339),
 		"track_token":    trackToken,
+		"notify_state":   values.NotifyState,
+	}
+	if values.NotifyState {
+		// Frozen from the mandatory contact address: the anonymous reporter
+		// has no account whose email could change later.
+		issueData["notify_email"] = values.ContactEmail
 	}
 
 	// The SLA is the same pair the in-app create stores: the template assigned

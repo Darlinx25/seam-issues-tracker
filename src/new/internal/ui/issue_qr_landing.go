@@ -46,8 +46,11 @@ type issueQRReportPageData struct {
 	ContactDocument string
 	ContactPhone    string
 	ContactEmail    string
-	Title           string
-	Description     string
+	// NotifyState is the anonymous reporter's opt-in to state-change emails.
+	// The destination is always ContactEmail, which this form already requires.
+	NotifyState bool
+	Title       string
+	Description string
 
 	// TemplateFields is the rendered block of the template assigned to the
 	// asset's type, or nil when no template applies.
@@ -87,6 +90,14 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 		}
 		if data.TemplateFields != nil {
 			problemFields = append(problemFields, data.TemplateFields(b))
+		}
+
+		notifyAttrs := []mi.Attribute{
+			mi.Type("checkbox"), mi.ID("notify_state"), mi.Name("notify_state"),
+			mi.Value("1"), mi.Class("h-4 w-4 rounded border-gray-300 text-indigo-600"),
+		}
+		if data.NotifyState {
+			notifyAttrs = append(notifyAttrs, mi.Checked())
 		}
 
 		return b.Div(mi.Class("space-y-4"),
@@ -129,6 +140,11 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 							issueQRReportTextInput(b, "contact_phone", t("qr.report.contact_phone"), "tel", data.ContactPhone, data.Errors["contact_phone"]),
 							issueQRReportTextInput(b, "contact_email", t("qr.report.contact_email"), "email", data.ContactEmail, data.Errors["contact_email"]),
 						),
+						// The contact address is mandatory, but notifications are not:
+						// the reporter still has to ask for them explicitly.
+						b.Div(b.Label(mi.Class("inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300"),
+							b.Input(notifyAttrs...), t("issues.forms.issue.field.notify_state")),
+							b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.forms.issue.field.notify_state.help"))),
 					)
 				})(b),
 				Card(t("qr.report.problem_title"), func(b *mi.Builder) mi.Node {

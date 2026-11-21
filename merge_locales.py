@@ -903,6 +903,41 @@ _QR_ADMIN_KEYS = {
     },
 }
 
+# State-change notifications through seam-comm (issue opt-in checkbox).
+_NOTIFY_KEYS = {
+    'en': {
+        'issues.forms.issue.field.notify_state': 'Receive state notifications',
+        'issues.forms.issue.field.notify_state.help': 'Sends an email whenever this issue changes state',
+        'issues.notification.subject': 'Issue #%d changed to %s',
+        'issues.notification.body': 'Issue **#%d** (%s) is now **%s**.',
+        'issues.notification.error.email_required': 'An email address is required to receive notifications',
+    },
+    'es': {
+        'issues.forms.issue.field.notify_state': 'Recibir notificaciones de estado',
+        'issues.forms.issue.field.notify_state.help': 'Envía un correo cuando esta incidencia cambia de estado',
+        'issues.notification.subject': 'Incidencia #%d cambió a %s',
+        'issues.notification.body': 'La incidencia **#%d** (%s) pasó a **%s**.',
+        'issues.notification.error.email_required': 'Se necesita un correo electrónico para recibir notificaciones',
+    },
+    'pt': {
+        'issues.forms.issue.field.notify_state': 'Receber notificações de estado',
+        'issues.forms.issue.field.notify_state.help': 'Envia um e-mail quando esta ocorrência muda de estado',
+        'issues.notification.subject': 'Ocorrência #%d mudou para %s',
+        'issues.notification.body': 'A ocorrência **#%d** (%s) passou para **%s**.',
+        'issues.notification.error.email_required': 'É necessário um e-mail para receber notificações',
+    },
+    'ja': {
+        'issues.forms.issue.field.notify_state': 'ステータス通知を受け取る',
+        'issues.forms.issue.field.notify_state.help': 'この課題のステータスが変わるたびにメールを送信します',
+        'issues.notification.subject': '課題 #%d が %s に変更されました',
+        'issues.notification.body': '課題 **#%d**（%s）のステータスが **%s** になりました。',
+        'issues.notification.error.email_required': '通知を受け取るにはメールアドレスが必要です',
+    },
+}
+
+for _k, _v in _NOTIFY_KEYS.get(L, {}).items():
+    d.setdefault(_k, _v)
+
 for _k, _v in _QR_ADMIN_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
 

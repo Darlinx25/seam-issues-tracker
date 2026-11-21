@@ -35,6 +35,13 @@
       "title": "Severity",
       "x-seam-input": "select",
       "enum": ["critical", "major", "minor"]
+    },
+    "notify_state": {
+      "type": "boolean",
+      "title": "Notify me about status changes",
+      "x-seam-input": "checkbox",
+      "x-seam-help": "Sends an email whenever this issue changes state",
+      "x-seam-help-style": "inline"
     }
   },
   "required": ["title"]

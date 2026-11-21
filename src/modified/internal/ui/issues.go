@@ -54,6 +54,11 @@ type Issue struct {
 	TrackGroupMode string
 	ReportedBy     int64  // user id of the reporter, stored on the entity
 	ReportedByName string // resolved, not stored -- populated on read for display
+	// NotifyState and NotifyEmail are frozen at creation. When the reporter
+	// opts in, every later lifecycle transition must reach the same address
+	// even if the account changes it or is deleted.
+	NotifyState bool
+	NotifyEmail string
 	Assignee       int64
 	AssigneeName   string
 	CreatedAt      string
@@ -95,6 +100,8 @@ func issueFromEntity(e *xolu.Entity) Issue {
 		TrackGroupMode:           toString(e.Data["track_group_mode"]),
 		CreatedAt:                toString(e.Data["created_at"]),
 		ReportedBy:               toInt64(e.Data["reported_by"]),
+		NotifyState:              e.Data["notify_state"] == true,
+		NotifyEmail:              toString(e.Data["notify_email"]),
 		Assignee:                 toInt64(e.Data["assignee"]),
 		TemplateID:               toInt64(e.Data["template_id"]),
 		FormData:                 toMap(e.Data["form_data"]),
@@ -637,7 +644,7 @@ func (h *UIHandler) issueAssetIDsByName(ctx context.Context, name string, limit 
 }
 
 func issueFormDefaults() map[string]interface{} {
-	return map[string]interface{}{"priority": "medium", "severity": "minor"}
+	return map[string]interface{}{"priority": "medium", "severity": "minor", "notify_state": false}
 }
 
 // IssueNew handles GET /issues/new.
@@ -706,6 +713,15 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		severity = "minor"
 	}
 
+	// An unchecked HTML checkbox posts nothing at all, so presence is the
+	// value. The address is taken from the session and frozen on the issue:
+	// a later profile change must not redirect existing notifications.
+	notifyState := r.FormValue("notify_state") != ""
+	notifyEmail := ""
+	if notifyState && currentUser != nil {
+		notifyEmail = strings.TrimSpace(currentUser.Email)
+	}
+
 	// Resolve the template assigned to the selected asset's type (if any)
 	// and collect its custom field values.
 	assetID := toInt64FromString(assetIDStr)
@@ -736,6 +752,9 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		errors["title"] = t("issues.error.title_required")
 	}
+	if notifyState && notifyEmail == "" {
+		errors["notify_state"] = t("issues.notification.error.email_required")
+	}
 	if len(errors) > 0 || len(fieldErrors) > 0 {
 		formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
 		rc := fe.RenderContext{Locale: h.currentLocale(), CSRFToken: csrfToken, Module: "issues", Form: "issue"}
@@ -749,6 +768,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		if severity != "" {
 			values["severity"] = severity
 		}
+		values["notify_state"] = notifyState
 		formContent := formEng.Render(ctx, resolveSchema(ctx, "issues", "create", issueschemas.Schema("create")), values, errors, rc)
 		var tplContent mi.H
 		if tpl != nil && len(tpl.Fields) > 0 {
@@ -794,6 +814,10 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		"machine_id":  machine.ID,
 		"channel":     "app",
 		"created_at":  now.Format(time.RFC3339),
+		"notify_state": notifyState,
+	}
+	if notifyState {
+		issueData["notify_email"] = notifyEmail
 	}
 	if assetID > 0 {
 		issueData["asset_id"] = assetID
@@ -1004,8 +1028,10 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 
 	var payload map[string]interface{}
+	var actorID int64
 	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
-		payload = map[string]interface{}{"actor": u.ID}
+		actorID = u.ID
+		payload = map[string]interface{}{"actor": actorID}
 	}
 	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{Input: input, Payload: payload})
 	if err != nil {
@@ -1031,6 +1057,9 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue walked but state patch failed", "id", id, "error", err)
 	}
+
+	// Best effort: a notification failure must never undo a FSM walk.
+	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID)
 
 	// The case is the single management point: the same input is replayed
 	// on every child, so the whole group keeps one state.
@@ -1108,8 +1137,10 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := map[string]interface{}{"motivo": motivo}
+	var actorID int64
 	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
-		payload["actor"] = u.ID
+		actorID = u.ID
+		payload["actor"] = actorID
 	}
 	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{
 		Input:   "reject",
@@ -1136,6 +1167,8 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.xoluClient.Patch(ctx, "issues", id, patchData); err != nil {
 		h.logger.Error("issue rejected but patch failed", "id", id, "error", err)
 	}
+
+	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID)
 
 	// Rejecting a case rejects the whole group: the reason travels with it.
 	if issue.MasterID == 0 {
