@@ -46,9 +46,9 @@ type issueQRReportPageData struct {
 	ContactDocument string
 	ContactPhone    string
 	ContactEmail    string
-	// NotifyState is the anonymous reporter's opt-in to state-change emails.
-	// The destination is always ContactEmail, which this form already requires.
-	NotifyState bool
+	// NotifyChannel is the anonymous reporter's notification preference.
+	// Only "email" is implemented; sms/whatsapp are shown disabled.
+	NotifyChannel string
 	Title       string
 	Description string
 
@@ -92,12 +92,18 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 			problemFields = append(problemFields, data.TemplateFields(b))
 		}
 
-		notifyAttrs := []mi.Attribute{
-			mi.Type("checkbox"), mi.ID("notify_state"), mi.Name("notify_state"),
-			mi.Value("1"), mi.Class("h-4 w-4 rounded border-gray-300 text-indigo-600"),
+		ch := data.NotifyChannel
+		if ch == "" {
+			ch = "none"
 		}
-		if data.NotifyState {
-			notifyAttrs = append(notifyAttrs, mi.Checked())
+		mkOpt := func(val, label string, selected, disabled bool) mi.Node {
+			a := []mi.Attribute{mi.Value(val)}
+			if selected { a = append(a, mi.Attr("selected", "selected")) }
+			if disabled { a = append(a, mi.Attr("disabled", "disabled")) }
+			args := []interface{}{}
+			for _, x := range a { args = append(args, x) }
+			args = append(args, label)
+			return b.Option(args...)
 		}
 
 		return b.Div(mi.Class("space-y-4"),
@@ -140,11 +146,19 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 							issueQRReportTextInput(b, "contact_phone", t("qr.report.contact_phone"), "tel", data.ContactPhone, data.Errors["contact_phone"]),
 							issueQRReportTextInput(b, "contact_email", t("qr.report.contact_email"), "email", data.ContactEmail, data.Errors["contact_email"]),
 						),
-						// The contact address is mandatory, but notifications are not:
-						// the reporter still has to ask for them explicitly.
-						b.Div(b.Label(mi.Class("inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300"),
-							b.Input(notifyAttrs...), t("issues.forms.issue.field.notify_state")),
-							b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.forms.issue.field.notify_state.help"))),
+						b.Div(mi.Class("space-y-1"),
+							b.Label(mi.For("notify_channel"), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+								t("issues.forms.issue.field.notify_channel")),
+							b.Select(append([]interface{}{
+								mi.ID("notify_channel"), mi.Name("notify_channel"),
+								mi.Class("w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500"),
+							},
+								mkOpt("none", t("issues.forms.issue.field.notify_channel.option.none"), ch=="none", false),
+								mkOpt("email", t("issues.forms.issue.field.notify_channel.option.email"), ch=="email", false),
+								mkOpt("sms", t("issues.forms.issue.field.notify_channel.option.sms"), ch=="sms", true),
+								mkOpt("whatsapp", t("issues.forms.issue.field.notify_channel.option.whatsapp"), ch=="whatsapp", true),
+							)...),
+							b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.forms.issue.field.notify_channel.help"))),
 					)
 				})(b),
 				Card(t("qr.report.problem_title"), func(b *mi.Builder) mi.Node {

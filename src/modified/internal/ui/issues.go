@@ -644,7 +644,7 @@ func (h *UIHandler) issueAssetIDsByName(ctx context.Context, name string, limit 
 }
 
 func issueFormDefaults() map[string]interface{} {
-	return map[string]interface{}{"priority": "medium", "severity": "minor", "notify_state": false}
+	return map[string]interface{}{"priority": "medium", "severity": "minor", "notify_channel": "none"}
 }
 
 // IssueNew handles GET /issues/new.
@@ -713,10 +713,14 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		severity = "minor"
 	}
 
-	// An unchecked HTML checkbox posts nothing at all, so presence is the
-	// value. The address is taken from the session and frozen on the issue:
-	// a later profile change must not redirect existing notifications.
-	notifyState := r.FormValue("notify_state") != ""
+	// Notification preference: only "email" is implemented; sms/whatsapp
+	// are exposed in the UI but disabled. The address is frozen from the
+	// session so a later profile change does not redirect notifications.
+	notifyChannel := r.FormValue("notify_channel")
+	if notifyChannel == "" {
+		notifyChannel = "none"
+	}
+	notifyState := notifyChannel == "email"
 	notifyEmail := ""
 	if notifyState && currentUser != nil {
 		notifyEmail = strings.TrimSpace(currentUser.Email)
@@ -753,7 +757,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		errors["title"] = t("issues.error.title_required")
 	}
 	if notifyState && notifyEmail == "" {
-		errors["notify_state"] = t("issues.notification.error.email_required")
+		errors["notify_channel"] = t("issues.notification.error.email_required")
 	}
 	if len(errors) > 0 || len(fieldErrors) > 0 {
 		formEng := &fe.FormEngine{Translator: h.formEngineTranslator()}
@@ -768,7 +772,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		if severity != "" {
 			values["severity"] = severity
 		}
-		values["notify_state"] = notifyState
+		values["notify_channel"] = notifyChannel
 		formContent := formEng.Render(ctx, resolveSchema(ctx, "issues", "create", issueschemas.Schema("create")), values, errors, rc)
 		var tplContent mi.H
 		if tpl != nil && len(tpl.Fields) > 0 {

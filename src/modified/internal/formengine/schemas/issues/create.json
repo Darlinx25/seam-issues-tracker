@@ -19,8 +19,13 @@
       "title": "Related Asset",
       "x-seam-input": "asset-picker",
       "x-seam-source": "entity:assets",
-      "x-seam-search-fields": ["name"],
-      "x-seam-display-fields": ["name", "status"],
+      "x-seam-search-fields": [
+        "name"
+      ],
+      "x-seam-display-fields": [
+        "name",
+        "status"
+      ],
       "x-seam-help": "Optional -- search for the asset this issue relates to",
       "x-seam-help-style": "inline"
     },
@@ -28,21 +33,43 @@
       "type": "string",
       "title": "Priority",
       "x-seam-input": "select",
-      "enum": ["critical", "high", "medium", "low"]
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ]
     },
     "severity": {
       "type": "string",
       "title": "Severity",
       "x-seam-input": "select",
-      "enum": ["critical", "major", "minor"]
+      "enum": [
+        "critical",
+        "major",
+        "minor"
+      ]
     },
-    "notify_state": {
-      "type": "boolean",
-      "title": "Notify me about status changes",
-      "x-seam-input": "checkbox",
-      "x-seam-help": "Sends an email whenever this issue changes state",
+    "notify_channel": {
+      "type": "string",
+      "title": "Notifications",
+      "x-seam-input": "select",
+      "enum": [
+        "none",
+        "email",
+        "sms",
+        "whatsapp"
+      ],
+      "default": "none",
+      "x-seam-option-disabled": [
+        "sms",
+        "whatsapp"
+      ],
+      "x-seam-help": "Choose how you want to receive status change notifications",
       "x-seam-help-style": "inline"
     }
   },
-  "required": ["title"]
+  "required": [
+    "title"
+  ]
 }
