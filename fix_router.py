@@ -23,6 +23,16 @@ GROUP_ROUTES = [
 
 REJECT_ROUTE = '\tmux.HandleFunc("POST /issues/{id}/reject", r.requireAuth(r.handler.IssueReject))\n'
 
+HOLD_RESUME_ROUTES = [
+    '\tmux.HandleFunc("POST /issues/{id}/hold", r.requireAuth(r.handler.IssueHold))\n',
+    '\tmux.HandleFunc("POST /issues/{id}/resume", r.requireAuth(r.handler.IssueResume))\n',
+]
+
+MERGE_ROUTES = [
+    '\tmux.HandleFunc("GET /issues/{id}/merge", r.requireAuth(r.handler.IssueMergeFormPage))\n',
+    '\tmux.HandleFunc("POST /issues/{id}/merge", r.requireAuth(r.handler.IssueMerge))\n',
+]
+
 # The create form's resolution estimate asks the server for the exact time
 # when the priority or the linked asset changes. The literal path wins over
 # "/issues/{id}" by ServeMux precedence, the same way "/issues/new" does.
@@ -91,6 +101,14 @@ def patch_issue_routes(path):
         block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(GROUP_ROUTES), 1)
         changed = True
         print("  router: grouping routes inserted")
+    if '"POST /issues/{id}/hold"' not in block or '"POST /issues/{id}/resume"' not in block:
+        block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(HOLD_RESUME_ROUTES), 1)
+        changed = True
+        print("  router: hold/resume routes inserted")
+    if '"GET /issues/{id}/merge"' not in block or '"POST /issues/{id}/merge"' not in block:
+        block = block.replace(REJECT_ROUTE, REJECT_ROUTE + ''.join(MERGE_ROUTES), 1)
+        changed = True
+        print("  router: merge routes inserted")
     if '"GET /issue-qr-codes"' not in block:
         anchor = '\tmux.HandleFunc("GET /issue-templates/fields", r.requireAuth(r.handler.IssueTemplateFields))\n'
         if anchor in block:

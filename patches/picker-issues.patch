@@ -1,0 +1,14 @@
+--- a/internal/ui/asset_picker_search.go
++++ b/internal/ui/asset_picker_search.go
+@@ -63,4 +63,11 @@
+ 	"entity:cost_centers": {table: "cost_centers", searchColumn: "name", label: costCenterLabel},
+ 	"entity:locations":    {table: "locations", searchColumn: "short_name", label: locationLabel},
+ 	"entity:custodians":   {table: "custodians", searchColumn: "legal_name", label: custodianLabel},
++	"entity:issues": {
++		table:        "issues",
++		searchColumn: "title",
++		label: func(row map[string]any) string {
++			return "#" + strconv.FormatInt(toInt64(row["id"]), 10) + " — " + toString(row["title"])
++		},
++	},
+ }

@@ -988,8 +988,20 @@ func (h *UIHandler) IssueClose(w http.ResponseWriter, r *http.Request) {
 	h.IssueTransition(w, r, "close")
 }
 
+func (h *UIHandler) IssueHold(w http.ResponseWriter, r *http.Request) {
+	h.IssueTransition(w, r, "hold")
+}
+
+func (h *UIHandler) IssueResume(w http.ResponseWriter, r *http.Request) {
+	h.IssueTransition(w, r, "resume")
+}
+
 // IssueTransition is the shared fetch-walk-denormalize sequence.
 func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, input string) {
+	h.issueTransition(w, r, input, nil)
+}
+
+func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, input string, extraPayload map[string]interface{}) {
 	t := h.translateFunc(r)
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -1032,10 +1044,19 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 
 	var payload map[string]interface{}
+	if len(extraPayload) > 0 {
+		payload = make(map[string]interface{}, len(extraPayload)+1)
+		for k, v := range extraPayload {
+			payload[k] = v
+		}
+	}
 	var actorID int64
 	if u := h.getCurrentUser(r); u != nil && u.ID > 0 {
 		actorID = u.ID
-		payload = map[string]interface{}{"actor": actorID}
+		if payload == nil {
+			payload = map[string]interface{}{}
+		}
+		payload["actor"] = actorID
 	}
 	result, err := h.xoluClient.WalkMachine(ctx, issue.MachineID, xolu.WalkRequest{Input: input, Payload: payload})
 	if err != nil {
@@ -1063,11 +1084,15 @@ func (h *UIHandler) IssueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 
 	// Best effort: a notification failure must never undo a FSM walk.
-	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID)
+	var canonicalID int64
+	if input == "merge" && payload != nil {
+		canonicalID = toInt64(payload["canonical_id"])
+	}
+	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID, canonicalID)
 
 	// The case is the single management point: the same input is replayed
 	// on every child, so the whole group keeps one state.
-	if issue.MasterID == 0 {
+	if issue.MasterID == 0 && input != "merge" {
 		h.propagateIssueTransition(ctx, issue, input, payload, nil)
 	}
 
@@ -1685,12 +1710,36 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 							b.Span(t("issues.action.start")),
 						),
 					))
+					if iss.State == "triaged" {
+						actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/hold", iss.ID)),
+							b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+							b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionSecondary)),
+								b.Span(mi.Class("material-icons text-base"), "pause_circle"),
+								b.Span(t("issues.action.hold")),
+							),
+						))
+					}
 				case "in_progress":
 					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resolve", iss.ID)),
 						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
 							b.Span(mi.Class("material-icons text-base"), "check_circle"),
 							b.Span(t("issues.action.resolve")),
+						),
+					))
+					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/hold", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionSecondary)),
+							b.Span(mi.Class("material-icons text-base"), "pause_circle"),
+							b.Span(t("issues.action.hold")),
+						),
+					))
+				case "on_hold":
+					actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/resume", iss.ID)),
+						b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
+						b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionPrimary)),
+							b.Span(mi.Class("material-icons text-base"), "play_arrow"),
+							b.Span(t("issues.action.resume")),
 						),
 					))
 				case "resolved":
@@ -1727,6 +1776,14 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					mi.Class(issueActionClass(issueActionDanger)),
 					b.Span(mi.Class("material-icons text-base"), "block"),
 					b.Span(t("issues.action.reject")),
+				))
+			}
+			if data.CanAct && len(data.Children) == 0 &&
+				(iss.State == "reported" || iss.State == "triaged" || iss.State == "in_progress") {
+				dangerBar = append(dangerBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/merge", iss.ID)),
+					mi.Class(issueActionClass(issueActionDanger)),
+					b.Span(mi.Class("material-icons text-base"), "merge_type"),
+					b.Span(t("issues.action.merge")),
 				))
 			}
 			if len(dangerBar) > 1 {

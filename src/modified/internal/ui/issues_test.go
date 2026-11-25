@@ -3195,3 +3195,258 @@ func TestIssueDetail_ShowsTemplatePhotos(t *testing.T) {
 		t.Error("expected the text field of the same template to keep rendering")
 	}
 }
+
+func TestIssueHold_TriagedToOnHold(t *testing.T) {
+	var walkInput string
+	var patchedState string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Broken", "state": "triaged", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "triaged", "current": "on_hold", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			patchedState = toString(body["state"])
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/hold", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueHold(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "hold" {
+		t.Errorf("expected walk input 'hold', got %q", walkInput)
+	}
+	if patchedState != "on_hold" {
+		t.Errorf("expected state 'on_hold', got %q", patchedState)
+	}
+}
+
+func TestIssueResume_OnHoldToInProgress(t *testing.T) {
+	var walkInput string
+	var patchedState string
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Broken", "state": "on_hold", "machine_id": float64(1)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Input string `json:"input"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			walkInput = body.Input
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "on_hold", "current": "in_progress", "terminal": false})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			patchedState = toString(body["state"])
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("POST", "/issues/1/resume", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueResume(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if walkInput != "resume" {
+		t.Errorf("expected walk input 'resume', got %q", walkInput)
+	}
+	if patchedState != "in_progress" {
+		t.Errorf("expected state 'in_progress', got %q", patchedState)
+	}
+}
+
+func TestIssueMerge_WalksWithCanonicalID(t *testing.T) {
+	var walkCalled bool
+	var walkBody struct {
+		Input   string                 `json:"input"`
+		Payload map[string]interface{} `json:"payload"`
+	}
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Duplicate report", "state": "reported", "machine_id": float64(1), "assignee": float64(42)})
+		},
+		"GET /api/v1/issues/2": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(2), "title": "Original report", "state": "triaged", "machine_id": float64(2)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walkCalled = true
+			json.NewDecoder(r.Body).Decode(&walkBody)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "reported", "current": "duplicate", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"canonical_id": {"2"}}
+	req := httptest.NewRequest("POST", "/issues/1/merge", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueMerge(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/1")
+	if !walkCalled {
+		t.Fatal("expected the merge to walk the FSM")
+	}
+	if walkBody.Input != "merge" {
+		t.Errorf("expected walk input 'merge', got %q", walkBody.Input)
+	}
+	if walkBody.Payload["canonical_id"] != float64(2) {
+		t.Errorf("expected payload.canonical_id=2, got %v", walkBody.Payload["canonical_id"])
+	}
+	if walkBody.Payload["actor"] != float64(42) {
+		t.Errorf("expected payload.actor=42, got %v", walkBody.Payload["actor"])
+	}
+	if patched["state"] != "duplicate" {
+		t.Errorf("expected state 'duplicate', got %v", patched)
+	}
+}
+
+func TestIssueMergeRefusalKeys(t *testing.T) {
+	valid := Issue{ID: 1, State: "in_progress"}
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"child", issueMergeRefusalKey(Issue{ID: 1, MasterID: 9, State: "in_progress"}, false), "issues.merge.error.child"},
+		{"case", issueMergeRefusalKey(valid, true), "issues.merge.error.has_children"},
+		{"terminal", issueMergeRefusalKey(Issue{ID: 1, State: "closed"}, false), "issues.merge.error.state_invalid"},
+		{"on_hold", issueMergeRefusalKey(Issue{ID: 1, State: "on_hold"}, false), "issues.merge.error.state_invalid"},
+		{"valid", issueMergeRefusalKey(valid, false), ""},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+		}
+	}
+}
+
+func TestIssueMergeCanonicalRefusalKeys(t *testing.T) {
+	open := &Issue{ID: 2, State: "reported"}
+	terminal := &Issue{ID: 2, State: "closed"}
+	child := &Issue{ID: 2, MasterID: 9, State: "reported"}
+	caseIssue := &Issue{ID: 2, State: "reported"}
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"missing_id", issueMergeCanonicalRefusalKey(1, 0, nil, false), "issues.merge.error.canonical_required"},
+		{"self", issueMergeCanonicalRefusalKey(1, 1, &Issue{ID: 1, State: "reported"}, false), "issues.merge.error.self"},
+		{"not_found", issueMergeCanonicalRefusalKey(1, 2, nil, false), "issues.merge.error.not_found"},
+		{"terminal", issueMergeCanonicalRefusalKey(1, 2, terminal, false), "issues.merge.error.terminal"},
+		{"child", issueMergeCanonicalRefusalKey(1, 2, child, false), "issues.merge.error.group"},
+		{"case", issueMergeCanonicalRefusalKey(1, 2, caseIssue, true), "issues.merge.error.group"},
+		{"valid", issueMergeCanonicalRefusalKey(1, 2, open, false), ""},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s: expected %q, got %q", tc.name, tc.want, tc.got)
+		}
+	}
+}
+
+func TestIssueMerge_NotResponsibleRefused(t *testing.T) {
+	var walkCalled bool
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "title": "Broken", "state": "reported", "machine_id": float64(1), "assignee": float64(7)})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walkCalled = true
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	form := url.Values{"canonical_id": {"2"}}
+	req := httptest.NewRequest("POST", "/issues/1/merge", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithClaims(req.Context(),
+		&auth.Claims{UserID: 42, TenantID: 1, Role: "operator"}))
+	rec := httptest.NewRecorder()
+	h.IssueMerge(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a non-responsible operator, got %d", rec.Code)
+	}
+	if walkCalled {
+		t.Error("expected no FSM walk when the user may not act on the issue")
+	}
+}
+
+func TestPickerSearch_IssuesEntity(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"POST /api/v1/oql/query": func(w http.ResponseWriter, r *http.Request) {
+			templateOQL(w, r, func(q string) []map[string]any {
+				if !strings.Contains(q, "FROM issues") {
+					return nil
+				}
+				return []map[string]any{{"id": float64(2), "title": "Broken pump"}}
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := httptest.NewRequest("GET", "/picker/search?entity=entity:issues&q=pump", nil)
+	rec := httptest.NewRecorder()
+	h.PickerSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from the issues picker, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var results []pickerSearchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &results); err != nil {
+		t.Fatalf("could not decode picker results: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one picker result, got %d", len(results))
+	}
+	if results[0].ID != 2 || results[0].Label != "#2 — Broken pump" {
+		t.Errorf("unexpected picker result: %+v", results[0])
+	}
+}

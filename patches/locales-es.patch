@@ -53,7 +53,7 @@
 +  "issues.history.action.resolve": "Resuelta",
 +  "issues.history.action.close": "Cerrada",
 +  "issues.history.action.reject": "Rechazada",
-+  "issues.history.action.merge": "Fusionada",
++  "issues.history.action.merge": "Marcada duplicada",
 +  "issues.history.reason": "Motivo",
 +  "issues.history.duplicate_of": "Duplicada de",
 +  "issues.templates": "Plantillas",

@@ -53,7 +53,7 @@
 +  "issues.history.action.resolve": "解決済み",
 +  "issues.history.action.close": "クローズ",
 +  "issues.history.action.reject": "却下",
-+  "issues.history.action.merge": "統合済み",
++  "issues.history.action.merge": "重複として記録",
 +  "issues.history.reason": "理由",
 +  "issues.history.duplicate_of": "重複先",
 +  "issues.templates": "テンプレート",

@@ -53,7 +53,7 @@
 +  "issues.history.action.resolve": "Resolved",
 +  "issues.history.action.close": "Closed",
 +  "issues.history.action.reject": "Rejected",
-+  "issues.history.action.merge": "Merged",
++  "issues.history.action.merge": "Marked duplicate",
 +  "issues.history.reason": "Reason",
 +  "issues.history.duplicate_of": "Duplicate of",
 +  "issues.templates": "Templates",

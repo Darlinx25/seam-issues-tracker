@@ -53,7 +53,7 @@
 +  "issues.history.action.resolve": "Resolvida",
 +  "issues.history.action.close": "Fechada",
 +  "issues.history.action.reject": "Rejeitada",
-+  "issues.history.action.merge": "Mesclada",
++  "issues.history.action.merge": "Marcada duplicada",
 +  "issues.history.reason": "Motivo",
 +  "issues.history.duplicate_of": "Duplicada de",
 +  "issues.templates": "Modelos",

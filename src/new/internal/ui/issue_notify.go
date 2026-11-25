@@ -46,7 +46,7 @@ func issueCommsSeverity(issue Issue) string {
 //
 // The caller passes t() explicitly so every user-visible string still goes
 // through the translator in the four supported locales.
-func (h *UIHandler) notifyIssueStateChange(ctx context.Context, t func(string, ...any) string, issue Issue, newState string, actorID int64) {
+func (h *UIHandler) notifyIssueStateChange(ctx context.Context, t func(string, ...any) string, issue Issue, newState string, actorID int64, canonicalID ...int64) {
 	if !issue.NotifyState || strings.TrimSpace(issue.NotifyEmail) == "" {
 		return
 	}
@@ -75,6 +75,9 @@ func (h *UIHandler) notifyIssueStateChange(ctx context.Context, t func(string, .
 	}
 	if actorID > 0 {
 		request.Metadata["actor_id"] = strconv.FormatInt(actorID, 10)
+	}
+	if len(canonicalID) > 0 && canonicalID[0] > 0 {
+		request.Metadata["canonical_id"] = strconv.FormatInt(canonicalID[0], 10)
 	}
 
 	// Same issue + same state + same second dedupes a retry of one transition;
