@@ -75,7 +75,23 @@ where `seam-2dcodes` is listening. Without it the codes are still generated and
 the public `/s/{code}` landing still works — the card just has no image.
 
 Run these from the `seam-2dcodes` repository root (shipped as
-`seam-2dcodes-v0.3.0-poc.zip` next to the Seam source):
+`seam-2dcodes-v0.3.0-poc.zip` next to the Seam source).
+
+**Windows (PowerShell):**
+
+```powershell
+go build -o seam-2dcodes.exe ./cmd/seam-2dcodes
+.\seam-2dcodes.exe -addr :8090
+```
+
+Check it is up:
+
+```powershell
+curl.exe -s http://127.0.0.1:8090/healthz
+# {"blob_backend":false,"status":"ok","version":"0.3.0-poc"}
+```
+
+**Linux / macOS (bash):**
 
 ```bash
 go build -o seam-2dcodes ./cmd/seam-2dcodes
@@ -93,6 +109,14 @@ curl -sS http://127.0.0.1:8090/healthz
 ```
 
 Smoke-test the same request Seam sends (SVG, inline base64):
+
+**Windows (PowerShell):**
+
+```powershell
+curl.exe -sS -X POST http://127.0.0.1:8090/v1/codes -H "content-type: application/json" -d '{"symbology":"qr","content":"http://127.0.0.1:8080/s/DEMO000000000001","format":"svg","output":"base64","options":{"level":"H","quietZone":16,"width":600,"height":600}}'
+```
+
+**Linux / macOS (bash):**
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8090/v1/codes \
@@ -180,9 +204,11 @@ through [seam-comm](../../seam-comm/seam-comm). An empty `comms_url` disables
 the whole feature, so Seam still builds and runs without this service.
 
 Run seam-comm from its own repository root, on port **8091** (8090 belongs to
-the QR renderer):
+the QR renderer).
 
-```
+**Windows (PowerShell):**
+
+```powershell
 go build -o seam-comm.exe ./cmd/seam-comm
 $env:SEAM_COMM_LISTEN_ADDR=":8091"
 $env:SEAM_COMM_PROVIDER_EMAIL="smtp"
@@ -193,8 +219,27 @@ $env:SEAM_COMM_SMTP_FROM="alerts@example.com"
 
 Check it is up:
 
-```
+```powershell
 curl.exe -s http://127.0.0.1:8091/healthz
+```
+
+**Linux / macOS (bash):**
+
+```bash
+go build -o seam-comm ./cmd/seam-comm
+export SEAM_COMM_LISTEN_ADDR=":8091"
+export SEAM_COMM_PROVIDER_EMAIL="smtp"
+export SEAM_COMM_SMTP_ADDR="smtp.example.com:587"
+export SEAM_COMM_SMTP_FROM="alerts@example.com"
+./seam-comm serve
+```
+
+The same `./` vs `.\` caveat as in Terminal 3 applies in zsh.
+
+Check it is up:
+
+```bash
+curl -sS http://127.0.0.1:8091/healthz
 ```
 
 Then set both keys in `config.json` (the merged `config.example.json` already
