@@ -107,12 +107,15 @@ func (h *UIHandler) RenderIssueQRReportLanding(w http.ResponseWriter, r *http.Re
 	t := h.translateFunc(r)
 	ctx := r.Context()
 
+	contactSettings := h.issueAnonymousContactSettingsForCode(ctx, data.Code)
 	pageData := issueQRReportPageData{
-		Code:          data.Code,
-		AssetName:     data.AssetName,
-		AssetType:     data.AssetType,
-		AssetLocation: data.Location,
-		AssetCategory: assetCategory,
+		Code:            data.Code,
+		AssetName:       data.AssetName,
+		AssetType:       data.AssetType,
+		AssetLocation:   data.Location,
+		AssetCategory:   assetCategory,
+		HideContact:     !contactSettings.Ask,
+		ContactOptional: contactSettings.Ask && !contactSettings.Required,
 	}
 	if tpl := h.resolveIssueTemplate(ctx, data.AssetID); tpl != nil && len(tpl.Fields) > 0 {
 		pageData.TemplateFields = h.renderTemplateFields(ctx, tpl,
@@ -159,6 +162,7 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	contactSettings := h.issueAnonymousContactSettingsForCode(ctx, code)
 	values := issueQRReportPageData{
 		Code:            code,
 		AssetName:       toString(asset.Data["name"]),
@@ -173,6 +177,11 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		Title:           strings.TrimSpace(r.FormValue("title")),
 		Description:     strings.TrimSpace(r.FormValue("description")),
 		Errors:          map[string]string{},
+		HideContact:     !contactSettings.Ask,
+		ContactOptional: contactSettings.Ask && !contactSettings.Required,
+	}
+	if values.HideContact {
+		values.NotifyChannel = "none"
 	}
 
 	// The template is resolved from the asset, exactly as the in-app form does
@@ -196,20 +205,34 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		values.Errors[key] = msg
 	}
 
-	if values.ContactName == "" {
-		values.Errors[qrReportContactName] = t("qr.report.error.contact_required")
-	}
-	if values.ContactDocument == "" {
-		values.Errors[qrReportContactDocument] = t("qr.report.error.contact_required")
-	}
-	if values.ContactPhone == "" {
-		values.Errors[qrReportContactPhone] = t("qr.report.error.contact_required")
-	}
-	switch {
-	case values.ContactEmail == "":
-		values.Errors[qrReportContactEmail] = t("qr.report.error.contact_required")
-	case !validIssueQRReportEmail(values.ContactEmail):
-		values.Errors[qrReportContactEmail] = t("error.invalid_email")
+	if !values.HideContact {
+		if values.ContactOptional {
+			// Optional details still have to be usable: a typo in an email the
+			// reporter chose to leave is caught, and email notifications cannot
+			// be requested without a valid address to send them to.
+			if values.ContactEmail != "" && !validIssueQRReportEmail(values.ContactEmail) {
+				values.Errors[qrReportContactEmail] = t("error.invalid_email")
+			}
+			if values.NotifyChannel == "email" && values.ContactEmail == "" {
+				values.Errors[qrReportContactEmail] = t("qr.report.error.contact_required")
+			}
+		} else {
+			if values.ContactName == "" {
+				values.Errors[qrReportContactName] = t("qr.report.error.contact_required")
+			}
+			if values.ContactDocument == "" {
+				values.Errors[qrReportContactDocument] = t("qr.report.error.contact_required")
+			}
+			if values.ContactPhone == "" {
+				values.Errors[qrReportContactPhone] = t("qr.report.error.contact_required")
+			}
+			switch {
+			case values.ContactEmail == "":
+				values.Errors[qrReportContactEmail] = t("qr.report.error.contact_required")
+			case !validIssueQRReportEmail(values.ContactEmail):
+				values.Errors[qrReportContactEmail] = t("error.invalid_email")
+			}
+		}
 	}
 	if values.Title == "" {
 		values.Errors["title"] = t("issues.error.title_required")
@@ -269,7 +292,9 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		"track_token":    trackToken,
 	}
 	notifyChannel := values.NotifyChannel
-	if notifyChannel == "" { notifyChannel = "none" }
+	if notifyChannel == "" {
+		notifyChannel = "none"
+	}
 	notifyState := notifyChannel == "email"
 	issueData["notify_state"] = notifyState
 	if notifyState {
@@ -293,11 +318,14 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The contact block is part of the report, not of a users row: it is stored
-	// in form_data next to the template's own answers.
-	formData[qrReportContactName] = values.ContactName
-	formData[qrReportContactDocument] = values.ContactDocument
-	formData[qrReportContactPhone] = values.ContactPhone
-	formData[qrReportContactEmail] = values.ContactEmail
+	// in form_data next to the template's own answers. A form configured not to
+	// ask for it carries no contact keys at all.
+	if !values.HideContact {
+		formData[qrReportContactName] = values.ContactName
+		formData[qrReportContactDocument] = values.ContactDocument
+		formData[qrReportContactPhone] = values.ContactPhone
+		formData[qrReportContactEmail] = values.ContactEmail
+	}
 	issueData["form_data"] = formData
 	if tpl != nil {
 		issueData["template_id"] = tpl.ID
@@ -310,8 +338,10 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(photoUploads) > 0 {
-		uploadedBy := values.ContactEmail
-		if uploadedBy == "" {
+		uploadedBy := "anonymous"
+		if values.ContactEmail != "" {
+			uploadedBy = values.ContactEmail
+		} else if values.ContactName != "" {
 			uploadedBy = values.ContactName
 		}
 		h.storeIssuePhotos(ctx, entity.ID, photoUploads, uploadedBy)
@@ -322,11 +352,20 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, issueTrackLinkPrefix+trackToken+"?new=1", http.StatusSeeOther)
 }
 
+func (h *UIHandler) IssueQRReportDone(w http.ResponseWriter, r *http.Request) {
+	t := h.translateFunc(r)
+	_ = h.page.RenderPublic(w, t("qr.report.done_title"), issueQRReportDonePage(t))
+}
+
 // MountIssueQRReportRoute registers the public routes of the QR channel.
 // GET /s/{code} is already mounted by the base router; these are not wrapped
 // in requireAuth, which is the whole point: the reporter has no account, so
 // there is no session to require.
 func (r *Router) MountIssueQRReportRoute(mux *http.ServeMux) {
+	if !r.config.EnableIssues {
+		return
+	}
 	mux.HandleFunc("POST /s/{code}/report", r.handler.IssueQRReport)
+	mux.HandleFunc("GET /s/{code}/done", r.handler.IssueQRReportDone)
 	mux.HandleFunc("GET /track/{token}", r.handler.IssueTrack)
 }

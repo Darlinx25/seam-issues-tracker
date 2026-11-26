@@ -13,6 +13,8 @@ package ui
 //	active          false once revoked
 //	created_at      RFC3339 UTC
 //	created_by      user id of the operator who generated it
+//	ask_contact     whether this QR's form asks for the contact block
+//	require_contact whether that block is mandatory; ignored when ask_contact is false
 //	revoked_at      RFC3339 UTC, empty until revoked
 //	qr_blob_key     xolu blob holding the rendered image (empty: no image yet)
 //	qr_content      the URL the image encodes (audit: which host it was made for)
@@ -62,14 +64,16 @@ const (
 
 // issueQRCode is one row of issue_qr_codes.
 type issueQRCode struct {
-	ID            int64
-	Code          string
-	AssetID       int64
-	AssetCategory string
-	Active        bool
-	CreatedAt     string
-	CreatedBy     int64
-	RevokedAt     string
+	ID             int64
+	Code           string
+	AssetID        int64
+	AssetCategory  string
+	Active         bool
+	CreatedAt      string
+	CreatedBy      int64
+	AskContact     bool
+	RequireContact bool
+	RevokedAt      string
 	// QRBlobKey is the xolu blob holding the rendered image; empty when the
 	// renderer was down or unconfigured at generation time. The code is
 	// valid either way -- the image is a convenience, not the link.
@@ -153,18 +157,21 @@ func issueQRCodeIsActive(v any) bool {
 // issueQRCodeFromRow maps an OQL row (or an entity's Data map) to the card's
 // value type.
 func issueQRCodeFromRow(row map[string]any) issueQRCode {
+	contact := issueAnonymousContactSettingsFromRow(row)
 	return issueQRCode{
-		ID:            toInt64(row["id"]),
-		Code:          toString(row["code"]),
-		AssetID:       toInt64(row["asset_id"]),
-		AssetCategory: toString(row["asset_category"]),
-		Active:        issueQRCodeIsActive(row["active"]),
-		CreatedAt:     toString(row["created_at"]),
-		CreatedBy:     toInt64(row["created_by"]),
-		RevokedAt:     toString(row["revoked_at"]),
-		QRBlobKey:     toString(row["qr_blob_key"]),
-		QRContent:     toString(row["qr_content"]),
-		QRFormat:      toString(row["qr_format"]),
+		ID:             toInt64(row["id"]),
+		Code:           toString(row["code"]),
+		AssetID:        toInt64(row["asset_id"]),
+		AssetCategory:  toString(row["asset_category"]),
+		Active:         issueQRCodeIsActive(row["active"]),
+		CreatedAt:      toString(row["created_at"]),
+		CreatedBy:      toInt64(row["created_by"]),
+		AskContact:     contact.Ask,
+		RequireContact: contact.Required,
+		RevokedAt:      toString(row["revoked_at"]),
+		QRBlobKey:      toString(row["qr_blob_key"]),
+		QRContent:      toString(row["qr_content"]),
+		QRFormat:       toString(row["qr_format"]),
 	}
 }
 
@@ -265,7 +272,7 @@ func (h *UIHandler) issueQRCodeExists(ctx context.Context, code string) (bool, e
 // The category is copied here, at generation time, with the same helper the
 // issue report uses, so the code keeps the category the asset had when the
 // printed QR was made.
-func (h *UIHandler) createIssueQRCode(ctx context.Context, assetID, createdBy int64, category string) (issueQRCode, error) {
+func (h *UIHandler) createIssueQRCode(ctx context.Context, assetID, createdBy int64, category string, contact issueAnonymousContactSettings) (issueQRCode, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for attempt := 0; attempt < issueQRCodeAttempts; attempt++ {
 		code, err := newIssueQRCode()
@@ -281,23 +288,27 @@ func (h *UIHandler) createIssueQRCode(ctx context.Context, assetID, createdBy in
 			continue
 		}
 		created, err := h.xoluClient.Create(ctx, issueQRCodesEntity, map[string]any{
-			"code":           code,
-			"asset_id":       assetID,
-			"asset_category": category,
-			"active":         true,
-			"created_at":     now,
-			"created_by":     createdBy,
+			"code":            code,
+			"asset_id":        assetID,
+			"asset_category":  category,
+			"active":          true,
+			"created_at":      now,
+			"created_by":      createdBy,
+			"ask_contact":     contact.Ask,
+			"require_contact": contact.Required,
 		})
 		if err != nil {
 			return issueQRCode{}, err
 		}
 		out := issueQRCode{
-			Code:          code,
-			AssetID:       assetID,
-			AssetCategory: category,
-			Active:        true,
-			CreatedAt:     now,
-			CreatedBy:     createdBy,
+			Code:           code,
+			AssetID:        assetID,
+			AssetCategory:  category,
+			Active:         true,
+			CreatedAt:      now,
+			CreatedBy:      createdBy,
+			AskContact:     contact.Ask,
+			RequireContact: contact.Required,
 		}
 		if created != nil {
 			out.ID = created.ID
@@ -416,8 +427,9 @@ func (h *UIHandler) AssetQRCodeGenerate(w http.ResponseWriter, r *http.Request) 
 		h.renderAssetQRCard(w, r, id, "issue_qr.error.already_active")
 		return
 	}
+	contact := parseIssueAnonymousContactSettings(r)
 	category := h.resolveAssetCategory(ctx, id)
-	created, err := h.createIssueQRCode(ctx, id, h.getCurrentUserID(r), category)
+	created, err := h.createIssueQRCode(ctx, id, h.getCurrentUserID(r), category, contact)
 	if err != nil {
 		h.logger.Error("issue qr code could not be created", "asset", id, "error", err)
 		h.renderAssetQRCard(w, r, id, "issue_qr.error.generate_failed")
@@ -461,8 +473,9 @@ func (h *UIHandler) AssetQRCodeRegenerate(w http.ResponseWriter, r *http.Request
 		h.renderAssetQRCard(w, r, id, "issue_qr.error.revoke_failed")
 		return
 	}
+	contact := parseIssueAnonymousContactSettings(r)
 	category := h.resolveAssetCategory(ctx, id)
-	created, err := h.createIssueQRCode(ctx, id, h.getCurrentUserID(r), category)
+	created, err := h.createIssueQRCode(ctx, id, h.getCurrentUserID(r), category, contact)
 	if err != nil {
 		h.logger.Error("issue qr code could not be regenerated", "asset", id, "error", err)
 		h.renderAssetQRCard(w, r, id, "issue_qr.error.generate_failed")
@@ -629,31 +642,27 @@ func issueQRCodeActiveContent(data issueQRCardData, t func(key string, args ...a
 			),
 		)
 		if data.CanManage {
+			contact := issueAnonymousContactSettings{Ask: code.AskContact, Required: code.RequireContact}
 			children = append(children,
-				b.Div(mi.Class("flex flex-wrap items-center gap-2"),
-					Button(t("issue_qr.regenerate"), "secondary",
-						mi.Type("button"),
-						mi.Attr("onclick", issueQRCodeConfirmScript(
-							data.AssetID,
-							"regenerate",
-							t("issue_qr.confirm_regenerate"),
-							t("issue_qr.confirm_regenerate_title"),
-							t("issue_qr.confirm_regenerate_ok"),
-							data.CSRFToken,
-						)),
-					)(b),
-					Button(t("issue_qr.revoke"), "danger",
-						mi.Type("button"),
-						mi.Attr("onclick", issueQRCodeConfirmScript(
-							data.AssetID,
-							"revoke",
-							t("issue_qr.confirm_revoke"),
-							t("issue_qr.confirm_revoke_title"),
-							t("issue_qr.confirm_revoke_ok"),
-							data.CSRFToken,
-						)),
-					)(b),
-				),
+				issueQRContactOptions(contact,
+					fmt.Sprintf("/assets/%d/qr/regenerate", data.AssetID),
+					data.CSRFToken,
+					t("issue_qr.regenerate"),
+					t,
+					func(b *mi.Builder) mi.Node {
+						return Button(t("issue_qr.revoke"), "danger",
+							mi.Type("button"),
+							mi.Attr("onclick", issueQRCodeConfirmScript(
+								data.AssetID,
+								"revoke",
+								t("issue_qr.confirm_revoke"),
+								t("issue_qr.confirm_revoke_title"),
+								t("issue_qr.confirm_revoke_ok"),
+								data.CSRFToken,
+							)),
+						)(b)
+					},
+				)(b),
 			)
 		}
 		return b.Div(children...)
@@ -675,19 +684,103 @@ func issueQRCodeEmptyContent(data issueQRCardData, t func(key string, args ...an
 		}
 		children = append(children, b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issue_qr.none")))
 		if data.CanManage {
-			children = append(children, b.Form(
-				mi.Method("post"),
-				mi.Action(fmt.Sprintf("/assets/%d/qr/generate", data.AssetID)),
-				mi.Attr("hx-post", fmt.Sprintf("/assets/%d/qr/generate", data.AssetID)),
-				mi.Attr("hx-target", "#"+issueQRCardElementID),
-				mi.Attr("hx-swap", "outerHTML"),
-				CSRFField(data.CSRFToken)(b),
-				Button(t("issue_qr.generate"), "primary", mi.Type("submit"))(b),
-			))
+			children = append(children, issueQRContactOptions(
+				defaultIssueAnonymousContactSettings(),
+				fmt.Sprintf("/assets/%d/qr/generate", data.AssetID),
+				data.CSRFToken,
+				t("issue_qr.generate"),
+				t,
+			)(b))
 		} else {
 			children = append(children, b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issue_qr.read_only")))
 		}
 		return b.Div(append([]interface{}{mi.Class("space-y-2")}, children...)...)
+	}
+}
+
+func issueQRContactOptions(settings issueAnonymousContactSettings, action, csrf, submitLabel string, t func(key string, args ...any) string, extra ...mi.H) mi.H {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
+	return func(b *mi.Builder) mi.Node {
+		askAttrs := []mi.Attribute{
+			mi.Type("checkbox"),
+			mi.ID("qr_contact_ask"),
+			mi.Name("qr_contact_ask"),
+			mi.Value("on"),
+			mi.Class("mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"),
+			mi.Attr("onchange", "var r=this.form.querySelector('[name=qr_contact_required]');var c=this.form.querySelector('#qr_contact_required_card');r.disabled=!this.checked;if(this.checked){c.classList.remove('opacity-50','cursor-not-allowed');}else{r.checked=false;c.classList.add('opacity-50','cursor-not-allowed');}"),
+		}
+		if settings.Ask {
+			askAttrs = append(askAttrs, mi.Attr("checked", ""))
+		}
+		requiredAttrs := []mi.Attribute{
+			mi.Type("checkbox"),
+			mi.ID("qr_contact_required"),
+			mi.Name("qr_contact_required"),
+			mi.Value("on"),
+			mi.Class("mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"),
+		}
+		if settings.Required && settings.Ask {
+			requiredAttrs = append(requiredAttrs, mi.Attr("checked", ""))
+		}
+		if !settings.Ask {
+			requiredAttrs = append(requiredAttrs, mi.Attr("disabled", "disabled"))
+		}
+		requiredCardClass := "flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 cursor-pointer transition-colors hover:border-indigo-400 dark:hover:border-indigo-500"
+		if !settings.Ask {
+			requiredCardClass += " opacity-50 cursor-not-allowed"
+		}
+		return b.Form(
+			mi.Method("post"),
+			mi.Action(action),
+			mi.Attr("hx-post", action),
+			mi.Attr("hx-target", "#"+issueQRCardElementID),
+			mi.Attr("hx-swap", "outerHTML"),
+			mi.Class("space-y-2"),
+			CSRFField(csrf)(b),
+			b.Input(mi.Type("hidden"), mi.Name("qr_contact_form"), mi.Value("1")),
+			b.Div(mi.Class("space-y-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3"),
+				b.Div(mi.Class("space-y-0.5"),
+					b.H4(mi.Class("text-sm font-semibold text-gray-900 dark:text-white"), t("issue_qr.contact.title")),
+					b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issue_qr.contact.hint")),
+				),
+				b.Div(mi.Class("grid gap-2 sm:grid-cols-2"),
+					b.Label(mi.Class("flex items-start gap-2 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-gray-800 px-3 py-2.5 cursor-pointer transition-colors hover:border-indigo-400 dark:hover:border-indigo-500"),
+						b.Input(askAttrs...),
+						b.Div(mi.Class("min-w-0 space-y-0.5"),
+							b.Div(mi.Class("flex items-center gap-1.5"),
+								b.Span(mi.Class("material-icons text-base text-indigo-600 dark:text-indigo-400"), "contact_mail"),
+								b.Span(mi.Class("text-sm font-medium text-gray-900 dark:text-white"), t("issue_qr.contact.ask")),
+							),
+						),
+					),
+					b.Label(mi.ID("qr_contact_required_card"), mi.Class(requiredCardClass),
+						b.Input(requiredAttrs...),
+						b.Div(mi.Class("min-w-0 space-y-0.5"),
+							b.Div(mi.Class("flex items-center gap-1.5"),
+								b.Span(mi.Class("material-icons text-base text-indigo-600 dark:text-indigo-400"), "gpp_good"),
+								b.Span(mi.Class("text-sm font-medium text-gray-900 dark:text-white"), t("issue_qr.contact.required")),
+							),
+						),
+					),
+				),
+			),
+			func() mi.Node {
+				actions := []interface{}{
+					b.Button(mi.Type("submit"), mi.Class("inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800"),
+						b.Span(mi.Class("material-icons text-base"), "autorenew"),
+						submitLabel,
+					),
+				}
+				for _, h := range extra {
+					if h != nil {
+						actions = append(actions, h(b))
+					}
+				}
+				return b.Div(append([]interface{}{mi.Class("flex flex-wrap items-center justify-end gap-2 pt-1")}, actions...)...)
+			}(),
+		)
 	}
 }
 

@@ -46,11 +46,17 @@ type issueQRReportPageData struct {
 	ContactDocument string
 	ContactPhone    string
 	ContactEmail    string
+	// HideContact comes from the global templates setting. The zero value keeps
+	// the original behaviour: the block is shown and all of it is required.
+	HideContact bool
+	// ContactOptional removes the required markers and lets the report be sent
+	// with an empty contact block. A malformed email is still rejected.
+	ContactOptional bool
 	// NotifyChannel is the anonymous reporter's notification preference.
 	// Only "email" is implemented; sms/whatsapp are shown disabled.
 	NotifyChannel string
-	Title       string
-	Description string
+	Title         string
+	Description   string
 
 	// TemplateFields is the rendered block of the template assigned to the
 	// asset's type, or nil when no template applies.
@@ -85,7 +91,7 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 		}
 
 		problemFields := []interface{}{
-			issueQRReportTextInput(b, "title", t("qr.report.field_title"), "text", data.Title, data.Errors["title"]),
+			issueQRReportTextInput(b, "title", t("qr.report.field_title"), "text", data.Title, data.Errors["title"], true),
 			issueQRReportTextarea(b, "description", t("qr.report.field_description"), data.Description, data.Errors["description"]),
 		}
 		if data.TemplateFields != nil {
@@ -98,10 +104,16 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 		}
 		mkOpt := func(val, label string, selected, disabled bool) mi.Node {
 			a := []mi.Attribute{mi.Value(val)}
-			if selected { a = append(a, mi.Attr("selected", "selected")) }
-			if disabled { a = append(a, mi.Attr("disabled", "disabled")) }
+			if selected {
+				a = append(a, mi.Attr("selected", "selected"))
+			}
+			if disabled {
+				a = append(a, mi.Attr("disabled", "disabled"))
+			}
 			args := []interface{}{}
-			for _, x := range a { args = append(args, x) }
+			for _, x := range a {
+				args = append(args, x)
+			}
 			args = append(args, label)
 			return b.Option(args...)
 		}
@@ -138,29 +150,35 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 			// scanner answers everything and sends once.
 			b.Form(mi.Method("POST"), mi.Action("/s/"+data.Code+"/report"), mi.Class("space-y-4"),
 				mi.Attr("enctype", "multipart/form-data"),
-				Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
-					return b.Div(mi.Class("space-y-4"),
-						issueQRReportTextInput(b, "contact_name", t("qr.report.contact_name"), "text", data.ContactName, data.Errors["contact_name"]),
-						issueQRReportTextInput(b, "contact_document", t("qr.report.contact_document"), "text", data.ContactDocument, data.Errors["contact_document"]),
-						b.Div(mi.Class("grid grid-cols-1 sm:grid-cols-2 gap-4"),
-							issueQRReportTextInput(b, "contact_phone", t("qr.report.contact_phone"), "tel", data.ContactPhone, data.Errors["contact_phone"]),
-							issueQRReportTextInput(b, "contact_email", t("qr.report.contact_email"), "email", data.ContactEmail, data.Errors["contact_email"]),
-						),
-						b.Div(mi.Class("space-y-1"),
-							b.Label(mi.For("notify_channel"), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
-								t("issues.forms.issue.field.notify_channel")),
-							b.Select(append([]interface{}{
-								mi.ID("notify_channel"), mi.Name("notify_channel"),
-								mi.Class("w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500"),
-							},
-								mkOpt("none", t("issues.forms.issue.field.notify_channel.option.none"), ch=="none", false),
-								mkOpt("email", t("issues.forms.issue.field.notify_channel.option.email"), ch=="email", false),
-								mkOpt("sms", t("issues.forms.issue.field.notify_channel.option.sms"), ch=="sms", true),
-								mkOpt("whatsapp", t("issues.forms.issue.field.notify_channel.option.whatsapp"), ch=="whatsapp", true),
-							)...),
-							b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.forms.issue.field.notify_channel.help"))),
-					)
-				})(b),
+				func() mi.Node {
+					if data.HideContact {
+						return b.Span()
+					}
+					required := !data.ContactOptional
+					return Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
+						return b.Div(mi.Class("space-y-4"),
+							issueQRReportTextInput(b, "contact_name", t("qr.report.contact_name"), "text", data.ContactName, data.Errors["contact_name"], required),
+							issueQRReportTextInput(b, "contact_document", t("qr.report.contact_document"), "text", data.ContactDocument, data.Errors["contact_document"], required),
+							b.Div(mi.Class("grid grid-cols-1 sm:grid-cols-2 gap-4"),
+								issueQRReportTextInput(b, "contact_phone", t("qr.report.contact_phone"), "tel", data.ContactPhone, data.Errors["contact_phone"], required),
+								issueQRReportTextInput(b, "contact_email", t("qr.report.contact_email"), "email", data.ContactEmail, data.Errors["contact_email"], required),
+							),
+							b.Div(mi.Class("space-y-1"),
+								b.Label(mi.For("notify_channel"), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+									t("issues.forms.issue.field.notify_channel")),
+								b.Select(append([]interface{}{
+									mi.ID("notify_channel"), mi.Name("notify_channel"),
+									mi.Class("w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500"),
+								},
+									mkOpt("none", t("issues.forms.issue.field.notify_channel.option.none"), ch == "none", false),
+									mkOpt("email", t("issues.forms.issue.field.notify_channel.option.email"), ch == "email", false),
+									mkOpt("sms", t("issues.forms.issue.field.notify_channel.option.sms"), ch == "sms", true),
+									mkOpt("whatsapp", t("issues.forms.issue.field.notify_channel.option.whatsapp"), ch == "whatsapp", true),
+								)...),
+								b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("issues.forms.issue.field.notify_channel.help"))),
+						)
+					})(b)
+				}(),
 				Card(t("qr.report.problem_title"), func(b *mi.Builder) mi.Node {
 					return b.Div(append([]interface{}{mi.Class("space-y-4")}, problemFields...)...)
 				})(b),
@@ -173,13 +191,38 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 	}
 }
 
-// issueQRReportLabel renders one field label with the required marker every
-// field of this form carries.
-func issueQRReportLabel(b *mi.Builder, forID, text string) mi.Node {
-	return b.Label(mi.For(forID), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
+func issueQRReportDonePage(t func(key string, args ...any) string) mi.H {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
+	return func(b *mi.Builder) mi.Node {
+		return b.Div(mi.Class("space-y-4"),
+			b.Div(mi.Class("text-center"),
+				b.H1(mi.Class("text-xl font-bold text-gray-900 dark:text-white"), t("qr.report.done_title")),
+			),
+			b.Div(mi.Class("px-4 py-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3"),
+				b.Span(mi.Class("material-icons text-green-600 dark:text-green-400"), "check_circle"),
+				b.Div(mi.Class("min-w-0"),
+					b.Div(mi.Class("text-sm font-semibold text-green-800 dark:text-green-300"), t("qr.report.done_message")),
+					b.P(mi.Class("mt-1 text-sm text-gray-600 dark:text-gray-400"), t("qr.report.done_hint")),
+				),
+			),
+		)
+	}
+}
+
+// issueQRReportLabel renders one field label, adding the required marker only
+// when the global contact setting (or the field itself) asks for it.
+func issueQRReportLabel(b *mi.Builder, forID, text string, required bool) mi.Node {
+	attrs := []interface{}{
+		mi.For(forID),
+		mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
 		b.Text(text),
-		b.Span(mi.Class("text-red-500"), " *"),
-	)
+	}
+	if required {
+		attrs = append(attrs, b.Span(mi.Class("text-red-500"), " *"))
+	}
+	return b.Label(attrs...)
 }
 
 // issueQRReportFieldError renders the inline error of one field, or nothing.
@@ -193,19 +236,22 @@ func issueQRReportFieldError(b *mi.Builder, message string) mi.Node {
 }
 
 // issueQRReportTextInput renders one labelled single-line input. inputType is
-// the HTML input type, so the browser enforces "required" and the email shape
-// before the form leaves the device; the handler validates them again.
-func issueQRReportTextInput(b *mi.Builder, name, label, inputType, value, errMsg string) mi.Node {
+// the HTML input type; required follows the field's configuration and the
+// handler always repeats the validation on the server.
+func issueQRReportTextInput(b *mi.Builder, name, label, inputType, value, errMsg string, required bool) mi.Node {
+	attrs := []mi.Attribute{
+		mi.Type(inputType),
+		mi.ID(name),
+		mi.Name(name),
+		mi.Value(value),
+		mi.Class(issueQRReportInputClass),
+	}
+	if required {
+		attrs = append(attrs, mi.Required())
+	}
 	return b.Div(
-		issueQRReportLabel(b, name, label),
-		b.Input(
-			mi.Type(inputType),
-			mi.ID(name),
-			mi.Name(name),
-			mi.Value(value),
-			mi.Required(),
-			mi.Class(issueQRReportInputClass),
-		),
+		issueQRReportLabel(b, name, label, required),
+		b.Input(attrs...),
 		issueQRReportFieldError(b, errMsg),
 	)
 }
@@ -213,7 +259,7 @@ func issueQRReportTextInput(b *mi.Builder, name, label, inputType, value, errMsg
 // issueQRReportTextarea renders the labelled description field.
 func issueQRReportTextarea(b *mi.Builder, name, label, value, errMsg string) mi.Node {
 	return b.Div(
-		issueQRReportLabel(b, name, label),
+		issueQRReportLabel(b, name, label, true),
 		b.Textarea(
 			mi.ID(name),
 			mi.Name(name),

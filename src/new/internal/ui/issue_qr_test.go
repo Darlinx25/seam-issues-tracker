@@ -9,8 +9,10 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,6 +82,17 @@ func qrTestPost(t *testing.T, h http.HandlerFunc, target, role string) *httptest
 	return rec
 }
 
+// qrTestPostForm runs a handler as the given role with a submitted form.
+func qrTestPostForm(t *testing.T, h http.HandlerFunc, target, role string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := qrTestRequest(t, http.MethodPost, target, role)
+	req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h(rec, req)
+	return rec
+}
+
 // qrTestGet runs a handler as the given role.
 func qrTestGet(t *testing.T, h http.HandlerFunc, target, role string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -101,6 +114,12 @@ func qrTestStoredRow(id int64, created map[string]any, active bool, revokedAt st
 	}
 	if _, ok := created["asset_category"]; ok {
 		row["asset_category"] = created["asset_category"]
+	}
+	if _, ok := created["ask_contact"]; ok {
+		row["ask_contact"] = created["ask_contact"]
+	}
+	if _, ok := created["require_contact"]; ok {
+		row["require_contact"] = created["require_contact"]
 	}
 	if revokedAt != "" {
 		row["revoked_at"] = revokedAt
@@ -156,6 +175,10 @@ func TestIssueQRCodeGenerate_CopiesAssetCategoryAndStoresCode(t *testing.T) {
 	if got := toInt64(created["created_by"]); got != 1 {
 		t.Errorf("created_by must be the operator, want 1, got %d", got)
 	}
+	if created["ask_contact"] != true || created["require_contact"] != true {
+		t.Errorf("a QR generated without options must ask for contact and require it, got ask=%v required=%v",
+			created["ask_contact"], created["require_contact"])
+	}
 	if !validIssueQRCode(createdCode) {
 		t.Errorf("the code must be 16 base32 chars, got %q", createdCode)
 	}
@@ -165,6 +188,9 @@ func TestIssueQRCodeGenerate_CopiesAssetCategoryAndStoresCode(t *testing.T) {
 	}
 	if !strings.Contains(body, "issue_qr.regenerate") || !strings.Contains(body, "issue_qr.revoke") {
 		t.Errorf("an active code must offer regenerate and revoke")
+	}
+	if !strings.Contains(body, `name="qr_contact_ask"`) || !strings.Contains(body, `name="qr_contact_required"`) {
+		t.Errorf("the regenerate form must ask for the contact options again")
 	}
 	if strings.Contains(body, "issue_qr.generate") {
 		t.Errorf("an asset with a live code must not offer plain generation")
@@ -310,7 +336,8 @@ func TestIssueQRCodeRegenerate_RevokesThenCreates(t *testing.T) {
 	defer server.Close()
 
 	h := newHandler(t, server)
-	rec := qrTestPost(t, h.AssetQRCodeRegenerate, "/assets/5/qr/regenerate", auth.RoleAdmin)
+	form := url.Values{"qr_contact_form": {"1"}, "qr_contact_required": {"on"}}
+	rec := qrTestPostForm(t, h.AssetQRCodeRegenerate, "/assets/5/qr/regenerate", auth.RoleAdmin, form)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -326,6 +353,10 @@ func TestIssueQRCodeRegenerate_RevokesThenCreates(t *testing.T) {
 	}
 	if createCount != 1 || created == nil {
 		t.Fatalf("exactly one replacement code must be created, got %d", createCount)
+	}
+	if created["ask_contact"] != false || created["require_contact"] != false {
+		t.Errorf("required must be ignored when contact is not asked, got ask=%v required=%v",
+			created["ask_contact"], created["require_contact"])
 	}
 	if createdCode == "AAAAAAAAAAAAAAAA" {
 		t.Error("the replacement code must be new")
@@ -394,6 +425,9 @@ func TestIssueQRCodeRevoke_DeactivatesWithoutReplacing(t *testing.T) {
 	}
 	if !strings.Contains(body, "issue_qr.generate") {
 		t.Errorf("an asset without a live code must offer generation")
+	}
+	if !strings.Contains(body, `name="qr_contact_ask"`) || !strings.Contains(body, `name="qr_contact_required"`) {
+		t.Errorf("the generate form must ask for the contact options")
 	}
 }
 
@@ -484,6 +518,9 @@ func TestAssetQRCodeCard_ViewerSeesReadOnlyCard(t *testing.T) {
 	}
 	if strings.Contains(body, "issue_qr.regenerate") || strings.Contains(body, "issue_qr.revoke") {
 		t.Errorf("a viewer must not be offered regenerate or revoke")
+	}
+	if strings.Contains(body, `name="qr_contact_ask"`) || strings.Contains(body, `name="qr_contact_required"`) {
+		t.Errorf("a viewer must not be offered the contact options")
 	}
 }
 

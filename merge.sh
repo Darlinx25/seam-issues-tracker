@@ -88,11 +88,11 @@ NEW_DIR="$SCRIPT_DIR/src/new"
 if [ -d "$NEW_DIR" ]; then
     FIND_CMD=(find "$NEW_DIR" -type f)
     COUNT=0
-    FORCE_OVERRIDE="internal/ui/issue_templates.go"
+    FORCE_OVERRIDE=" internal/ui/issue_templates.go internal/ui/issue_qr_report.go internal/ui/issue_qr_landing.go internal/ui/issue_qr_report_test.go internal/ui/issue_qr.go internal/ui/issue_qr_test.go "
     while IFS= read -r file; do
         rel="${file#"$NEW_DIR"/}"
         target="$OUTPUT_DIR/$rel"
-        if [ -e "$target" ] && [ "$rel" != "$FORCE_OVERRIDE" ]; then
+        if [ -e "$target" ] && [[ "$FORCE_OVERRIDE" != *" $rel "* ]]; then
             echo "  kept upstream: $rel"
             continue
         fi
@@ -270,6 +270,12 @@ required_keys = (
     "issues.merge.title",
     "issues.merge.error.child",
     "qr.track.activity.merge",
+    "issue_qr.contact.title",
+    "issue_qr.contact.hint",
+    "issue_qr.contact.ask",
+    "issue_qr.contact.ask_hint",
+    "issue_qr.contact.required",
+    "issue_qr.contact.required_hint",
 )
 for lang, expected in expected_merge.items():
     locale_path = root / f"internal/i18n/locales/{lang}.json"
