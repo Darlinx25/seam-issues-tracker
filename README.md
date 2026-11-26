@@ -59,7 +59,7 @@ go build -o /tmp/xolu-bin ./cmd/xolu
 
 ### Terminal 1: Start xolu
 ```
-XOLU_API_V2_ENABLED=true /tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
+XOLU_BLOB_ENABLED=true XOLU_API_V2_ENABLED=true /tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
 ```
 
 ### Terminal 2: Copy config and start seam
