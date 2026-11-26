@@ -59,7 +59,7 @@ go build -o /tmp/xolu-bin ./cmd/xolu
 
 ### Terminal 1: Start xolu
 ```
-XOLU_BLOB_ENABLED=true XOLU_API_V2_ENABLED=true /tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
+XOLU_API_V2_ENABLED=true XOLU_BLOB_ENABLED=true /tmp/xolu-bin --port 9090 --base-dir /tmp/xolu-data
 ```
 
 ### Terminal 2: Copy config and start seam
@@ -77,45 +77,99 @@ the public `/s/{code}` landing still works — the card just has no image.
 Run these from the `seam-2dcodes` repository root (shipped as
 `seam-2dcodes-v0.3.0-poc.zip` next to the Seam source):
 
+```bash
+go build -o seam-2dcodes ./cmd/seam-2dcodes
+./seam-2dcodes -addr :8090
 ```
-go build -o seam-2dcodes.exe ./cmd/seam-2dcodes
-.\seam-2dcodes.exe -addr :8090
-```
+
+Use `./`, not `.\`: in zsh the backslash escapes the dot, so `.\seam-2dcodes`
+is looked up as `.seam-2dcodes` instead of the binary in the current directory.
 
 Check it is up:
 
-```
-curl.exe -s http://127.0.0.1:8090/healthz
+```bash
+curl -sS http://127.0.0.1:8090/healthz
 # {"blob_backend":false,"status":"ok","version":"0.3.0-poc"}
 ```
 
-Then both QR keys must be set in `config.json` (the merged
-`config.example.json` already ships these values):
+Smoke-test the same request Seam sends (SVG, inline base64):
 
-```
-"qr_base_url":   "http://localhost:8080",
-"qr_render_url": "http://127.0.0.1:8090",
+```bash
+curl -sS -X POST http://127.0.0.1:8090/v1/codes \
+  -H 'content-type: application/json' \
+  -d '{"symbology":"qr","content":"http://127.0.0.1:8080/s/DEMO000000000001","format":"svg","output":"base64","options":{"level":"H","quietZone":16,"width":600,"height":600}}'
 ```
 
-- `qr_base_url` is the host printed on the label, so it must be reachable from
-  the phone scanning the code. On a desktop that is `http://localhost:8080`; for
-  a phone on the LAN use the machine's LAN IP instead (e.g.
-  `http://192.168.1.5:8080`), and allow the port through the firewall.
-- `qr_render_url` is this service. Empty disables the image entirely: the card
-  falls back to the link-only version with no image and no retry button.
+A successful response contains a `data` field with an
+`image/svg+xml;base64,...` value; `blob_backend:false` in `healthz` is expected
+because Seam uploads the returned image to xolu itself.
+
+Then these keys must be set under `"features"` in the merged `config.json`
+(the merged `config.example.json` already ships these values):
+
+```json
+{
+  "features": {
+    "enable_qr": true,
+    "qr_prefix": "SEAM",
+    "qr_base_url": "http://localhost:8080",
+    "qr_render_url": "http://127.0.0.1:8090"
+  }
+}
+```
+
+Check what Seam actually loaded:
+
+```bash
+cd /tmp/seam-dev
+python3 -c 'import json; f=json.load(open("config.json"))["features"]; print(f["enable_qr"], f["qr_prefix"], f["qr_base_url"], f["qr_render_url"])'
+```
+
+Config is read at startup: restart Seam after editing `config.json`.
+
+- `features.enable_qr` must be `true`, otherwise the QR card is disabled.
+- `features.qr_prefix` is the prefix of newly generated codes. Changing it only
+  affects codes generated afterwards.
+- `features.qr_base_url` is the public prefix encoded inside the QR. Seam joins
+  it with `/s/<code>` (a bare host is normalized to that path automatically).
+  It must be reachable from the phone scanning the code:
+  `http://localhost:8080` only works when the scanner is on the same machine;
+  for a phone on the LAN use that machine's IP (e.g.
+  `http://192.168.1.5:8080`) and allow the port through the firewall.
+- `features.qr_render_url` is the seam-2dcodes base URL. Seam appends
+  `/v1/codes` and asks for SVG/base64; it only has to be reachable from the
+  Seam process, not from the phone. Leaving it empty disables the image: the
+  card falls back to the link-only version with no image and no retry button.
 
 Requirements worth knowing:
 
 - xolu must have blob storage enabled: the startup banner lists `blob storage`
-  under `Features`. If it is missing, start xolu with `XOLU_BLOB_ENABLED=true`.
+  under `Features`. That is why Terminal 1 sets `XOLU_BLOB_ENABLED=true`.
 - The renderer needs no xolu credentials. Seam asks for `output: "base64"` and
   uploads the image to xolu itself, which is why `blob_backend` is `false` in
   the health check above.
 - `-addr :8090` only has to be reachable from Seam, not from the phone.
 
-Changing either value requires restarting Seam (config is read at startup). The
-image already stored in xolu keeps encoding the old URL until it is re-rendered:
-use **Retry image** (or **Regenerate**) on the asset's QR card.
+### If the QR image still does not appear
+
+- `curl -sS http://127.0.0.1:8090/healthz` fails → renderer is down or listening
+  on another port; start it with `./seam-2dcodes -addr :8090`.
+- `bind: address already in use` → an old renderer is still running. Find and
+  stop it, then start the new one:
+
+  ```bash
+  lsof -nP -iTCP:8090 -sTCP:LISTEN
+  kill <PID>
+  ```
+
+- Health is OK but the card has no image → confirm `features.qr_render_url`,
+  restart Seam, then use **Retry image** or **Regenerate** on the asset's QR
+  card. An image already stored in xolu keeps encoding the old URL until it is
+  re-rendered.
+- The scanned QR opens the wrong host → fix `features.qr_base_url` (use the
+  machine's LAN IP for phones) and **Regenerate** the code.
+- The xolu banner has no `blob storage` → restart it with
+  `XOLU_BLOB_ENABLED=true`.
 
 ### Terminal 4 (Optional): State-change notifications with seam-comm
 
