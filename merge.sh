@@ -47,13 +47,21 @@ echo "Output:   $OUTPUT_DIR"
 echo ""
 
 # Step 1: Extract ZIP
-echo "[1/7] Extracting ZIP..."
+echo "[1/8] Extracting ZIP..."
+case "$OUTPUT_DIR" in
+    /tmp/*) ;;
+    *)
+        echo "ERROR: output directory must be under /tmp to be cleaned safely: $OUTPUT_DIR" >&2
+        exit 1
+        ;;
+esac
+rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 unzip -o "$ZIP" -d "$OUTPUT_DIR" > /dev/null
 echo "  Extracted to $OUTPUT_DIR"
 
 # Step 2: Overlay modified files
-echo "[2/7] Applying modified files..."
+echo "[2/8] Applying modified files..."
 MODIFIED_DIR="$SCRIPT_DIR/src/modified"
 if [ -d "$MODIFIED_DIR" ]; then
     FIND_CMD=(find "$MODIFIED_DIR" -type f)
@@ -75,14 +83,19 @@ else
 fi
 
 # Step 3: Copy new files
-echo "[3/7] Adding new files..."
+echo "[3/8] Adding new files..."
 NEW_DIR="$SCRIPT_DIR/src/new"
 if [ -d "$NEW_DIR" ]; then
     FIND_CMD=(find "$NEW_DIR" -type f)
     COUNT=0
+    FORCE_OVERRIDE="internal/ui/issue_templates.go"
     while IFS= read -r file; do
         rel="${file#"$NEW_DIR"/}"
         target="$OUTPUT_DIR/$rel"
+        if [ -e "$target" ] && [ "$rel" != "$FORCE_OVERRIDE" ]; then
+            echo "  kept upstream: $rel"
+            continue
+        fi
         mkdir -p "$(dirname "$target")"
         cp "$file" "$target"
         echo "  added: $rel"
@@ -96,22 +109,32 @@ else
 fi
 
 # Step 4: Apply patches
-echo "[4/7] Applying patches..."
+echo "[4/8] Applying patches..."
+find "$OUTPUT_DIR" \( -name '*.rej' -o -name '*.orig' \) -delete
 PATCHES_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCHES_DIR" ] && ls "$PATCHES_DIR"/*.patch > /dev/null 2>&1; then
     for patch in "$PATCHES_DIR"/*.patch; do
-        if patch -d "$OUTPUT_DIR" -p1 --forward --silent < "$patch" 2>/dev/null; then
-            echo "  applied: $(basename "$patch")"
-        else
-            echo "  ALREADY APPLIED or CONFLICT: $(basename "$patch")"
+        name="$(basename "$patch")"
+        if patch -d "$OUTPUT_DIR" -p1 --dry-run --silent < "$patch" > /dev/null 2>&1; then
+            if patch -d "$OUTPUT_DIR" -p1 --forward --silent < "$patch" > /dev/null 2>&1; then
+                echo "  applied: $name"
+                continue
+            fi
         fi
+        if patch -d "$OUTPUT_DIR" -p1 -R --dry-run --silent < "$patch" > /dev/null 2>&1; then
+            echo "  already applied: $name"
+            continue
+        fi
+        echo "  ERROR: patch cannot be applied and is not already applied: $name" >&2
+        patch -d "$OUTPUT_DIR" -p1 --dry-run < "$patch" >&2 || true
+        exit 1
     done
 else
     echo "  (no patches found)"
 fi
 
 # Step 5: Fix go.mod (remove broken replace directives, update deps)
-echo "[5/7] Fixing go.mod..."
+echo "[5/8] Fixing go.mod..."
 cd "$OUTPUT_DIR"
 if grep -q "^replace" go.mod 2>/dev/null; then
     echo "  Found replace directive in go.mod — fixing..."
@@ -137,9 +160,21 @@ fi
 
 # Step 6: Register the routes, wire the per-asset QR card and its image
 # settings, merge the issues translation keys
-echo "[6/7] Registering routes, wiring the QR card and merging locales..."
+echo "[6/8] Registering routes, wiring the QR card and merging locales..."
 if [ -f "$OUTPUT_DIR/internal/ui/router.go" ] && [ -f "$SCRIPT_DIR/fix_router.py" ]; then
     python3 "$SCRIPT_DIR/fix_router.py" "$OUTPUT_DIR/internal/ui/router.go"
+fi
+if [ -f "$OUTPUT_DIR/internal/ui/asset_picker_search.go" ] && [ -f "$SCRIPT_DIR/fix_picker.py" ]; then
+    python3 "$SCRIPT_DIR/fix_picker.py" "$OUTPUT_DIR/internal/ui/asset_picker_search.go"
+fi
+if [ -f "$OUTPUT_DIR/internal/formengine/schemas/issues/issues.go" ] && [ -f "$SCRIPT_DIR/fix_issue_schemas.py" ]; then
+    python3 "$SCRIPT_DIR/fix_issue_schemas.py" "$OUTPUT_DIR/internal/formengine/schemas/issues/issues.go"
+fi
+if [ -f "$OUTPUT_DIR/internal/ui/developer_pages_seed.json" ] && [ -f "$SCRIPT_DIR/fix_pages_seed.py" ]; then
+    python3 "$SCRIPT_DIR/fix_pages_seed.py" "$OUTPUT_DIR/internal/ui/developer_pages_seed.json"
+fi
+if [ -f "$OUTPUT_DIR/internal/formengine/designer/catalogue.go" ] && [ -f "$SCRIPT_DIR/fix_catalogue.py" ]; then
+    python3 "$SCRIPT_DIR/fix_catalogue.py" "$OUTPUT_DIR/internal/formengine/designer/catalogue.go"
 fi
 if [ -f "$SCRIPT_DIR/fix_issue_qr.py" ]; then
     python3 "$SCRIPT_DIR/fix_issue_qr.py" "$OUTPUT_DIR/internal/ui/asset_detail.go" "$OUTPUT_DIR/internal/ui/routes.go"
@@ -170,7 +205,7 @@ if [ -f "$SCRIPT_DIR/merge_locales.py" ]; then
     done
 fi
 
-echo "[7/7] Regenerating Tailwind CSS..."
+echo "[7/8] Regenerating Tailwind CSS..."
 if command -v npm > /dev/null 2>&1; then
     if [ -f package.json ]; then
         if [ ! -x node_modules/.bin/tailwindcss ]; then
@@ -192,6 +227,81 @@ if command -v npm > /dev/null 2>&1; then
 else
     echo "  WARNING: npm not available. Run 'npm install && npm run css' before serving."
 fi
+
+echo "[8/8] Validating merge..."
+python3 - "$OUTPUT_DIR" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+errors = []
+
+
+def require(text, token, where):
+    if token not in text:
+        errors.append(f"{where}: missing {token}")
+
+
+router_path = root / "internal/ui/router.go"
+router = router_path.read_text(encoding="utf-8") if router_path.exists() else ""
+for token in (
+    "GET /issues/{id}/assign",
+    "GET /issues/group",
+    "POST /issues/{id}/hold",
+    "POST /issues/{id}/resume",
+    "GET /issues/{id}/merge",
+    "POST /issues/{id}/merge",
+    "GET /issue-qr-codes",
+    "POST /assets/{id}/qr/generate",
+):
+    require(router, f'"{token}"', "internal/ui/router.go")
+
+expected_merge = {
+    "en": "Marked duplicate",
+    "es": "Marcada duplicada",
+    "pt": "Marcada duplicada",
+    "ja": "重複として記録",
+}
+required_keys = (
+    "issues.action.hold",
+    "issues.action.resume",
+    "issues.action.merge",
+    "issues.merge.title",
+    "issues.merge.error.child",
+    "qr.track.activity.merge",
+)
+for lang, expected in expected_merge.items():
+    locale_path = root / f"internal/i18n/locales/{lang}.json"
+    if not locale_path.exists():
+        errors.append(f"internal/i18n/locales/{lang}.json: missing file")
+        continue
+    data = json.loads(locale_path.read_text(encoding="utf-8"))
+    for key in required_keys:
+        if key not in data:
+            errors.append(f"internal/i18n/locales/{lang}.json: missing {key}")
+    if data.get("issues.history.action.merge") != expected:
+        errors.append(
+            f"internal/i18n/locales/{lang}.json: issues.history.action.merge = "
+            f"{data.get('issues.history.action.merge')!r}, want {expected!r}"
+        )
+
+cfg_path = root / "config.example.json"
+cfg = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+for token in ('"qr_base_url"', '"qr_render_url"', '"comms_url"', '"comms_api_key"'):
+    require(cfg, token, "config.example.json")
+
+rejects = sorted(str(p.relative_to(root)) for p in root.rglob("*.rej"))
+if rejects:
+    errors.append("leftover patch rejects: " + ", ".join(rejects))
+
+if errors:
+    print("  validation FAILED:", file=sys.stderr)
+    for err in errors:
+        print(f"    - {err}", file=sys.stderr)
+    sys.exit(1)
+print("  validation OK")
+PY
 
 echo ""
 echo "=== Done ==="

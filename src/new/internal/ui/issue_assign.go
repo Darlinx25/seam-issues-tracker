@@ -175,7 +175,11 @@ func (h *UIHandler) IssueAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		errMsg := "Invalid form data"
+		if translated := t("error.invalid_form_data"); translated != "" && translated != "error.invalid_form_data" {
+			errMsg = translated
+		}
+		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
 	assignee := toInt64FromString(strings.TrimSpace(r.FormValue("assignee")))

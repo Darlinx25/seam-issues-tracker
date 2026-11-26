@@ -60,7 +60,6 @@
         "sms",
         "whatsapp"
       ],
-      "default": "none",
       "x-seam-option-disabled": [
         "sms",
         "whatsapp"

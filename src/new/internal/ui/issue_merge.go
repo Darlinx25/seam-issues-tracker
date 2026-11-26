@@ -9,18 +9,8 @@ import (
 
 	mi "github.com/ha1tch/minty"
 	fe "github.com/ha1tch/seam-ui/internal/formengine"
+	issueschemas "github.com/ha1tch/seam-ui/internal/formengine/schemas/issues"
 )
-
-var issueMergeSchema = []byte(`{
-  "type": "object",
-  "properties": {
-    "canonical_id": {
-      "type": "integer",
-      "x-seam-input": "any-picker",
-      "x-seam-source": "entity:issues"
-    }
-  }
-}`)
 
 type IssueMergeData struct {
 	Issue       Issue
@@ -84,7 +74,7 @@ func (h *UIHandler) renderMergeForm(ctx context.Context, canonicalID int64, csrf
 	if errMsg != "" {
 		errs = map[string]string{"canonical_id": errMsg}
 	}
-	return formEng.Render(ctx, resolveSchema(ctx, "issues", "merge", issueMergeSchema), defaults, errs, rc)
+	return formEng.Render(ctx, resolveSchema(ctx, "issues", "merge", issueschemas.Schema("merge")), defaults, errs, rc)
 }
 
 func (h *UIHandler) IssueMergeFormPage(w http.ResponseWriter, r *http.Request) {

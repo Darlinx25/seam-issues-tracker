@@ -17,11 +17,11 @@ elif L == 'es':
     d.setdefault('issues.state.reported','Reportada'); d.setdefault('issues.state.triaged','En triaje'); d.setdefault('issues.state.in_progress','En Progreso'); d.setdefault('issues.state.on_hold','En espera'); d.setdefault('issues.state.resolved','Resuelta'); d.setdefault('issues.state.closed','Cerrada'); d.setdefault('issues.state.rejected','Rechazada'); d.setdefault('issues.state.duplicate','Duplicada')
     d.setdefault('issues.action.create','Crear Incidencia'); d.setdefault('issues.action.start','Iniciar'); d.setdefault('issues.action.resolve','Resolver'); d.setdefault('issues.action.close','Cerrar'); d.setdefault('issues.action.reject','Rechazar'); d.setdefault('issues.action.assign','Asignar'); d.setdefault('issues.sla.title','SLA'); d.setdefault('issues.sla.first_response','Primera respuesta'); d.setdefault('issues.sla.resolution','Resolución'); d.setdefault('issues.sla.first_response_at','Primera respuesta el'); d.setdefault('issues.sla.completed_by','Completada por'); d.setdefault('issues.sla.pending','Pendiente'); d.setdefault('issues.sla.overdue','Vencido'); d.setdefault('issues.sla.due_soon','Vence pronto'); d.setdefault('issues.sla.on_time','En plazo'); d.setdefault('issues.sla.remaining','Tiempo restante'); d.setdefault('issues.sla.overdue_by','Vencido hace'); d.setdefault('issues.sla.starts_at','Inicio'); d.setdefault('issues.sla.due_at','Vence'); d.setdefault('issues.sla.max_time','Tiempo máximo'); d.setdefault('issues.sla.priority','Prioridad'); d.setdefault('issues.priority.critical','Crítica'); d.setdefault('issues.priority.high','Alta'); d.setdefault('issues.priority.medium','Media'); d.setdefault('issues.priority.low','Baja'); d.setdefault('issues.templates.sla_section','SLA por prioridad'); d.setdefault('issues.templates.sla_first_response','Primera respuesta'); d.setdefault('issues.templates.sla_resolution','Resolución'); d.setdefault('issues.templates.sla_hint','Dejar vacío para usar valores por defecto según prioridad y categoría del activo'); d.setdefault('issues.templates.sla_use_defaults','Usando valores por defecto según prioridad y categoría del activo'); d.setdefault('issues.templates.unit.minutes','minutos'); d.setdefault('issues.templates.unit.hours','horas'); d.setdefault('issues.templates.unit.days','días'); d.setdefault('issues.templates.unit.weeks','semanas')
     d.setdefault('issues.all','Todos'); d.setdefault('issues.list_title','Incidencias'); d.setdefault('issues.detail_title','Incidencia'); d.setdefault('issues.new','Nueva Incidencia'); d.setdefault('issues.empty','Aún no hay incidencias'); d.setdefault('issues.no_asset','Sin activo vinculado'); d.setdefault('issues.linked_to','Vinculado a'); d.setdefault('issues.reported_by','Reportado por'); d.setdefault('issues.assignee','Responsable'); d.setdefault('issues.unassigned','Sin asignar')
-    d.setdefault('issues.assign.title','Asignar responsable'); d.setdefault('issues.assign.error.assignee_required','Seleccioná un responsable'); d.setdefault('issues.assign.error.terminal','No se puede asignar en una incidencia cerrada'); d.setdefault('issues.assign.error.locked','No se puede cambiar el responsable una vez iniciada la incidencia')
+    d.setdefault('issues.assign.title','Asignar responsable'); d.setdefault('issues.assign.error.assignee_required','Seleccione un responsable'); d.setdefault('issues.assign.error.terminal','No se puede asignar en una incidencia cerrada'); d.setdefault('issues.assign.error.locked','No se puede cambiar el responsable una vez iniciada la incidencia')
     d.setdefault('issues.reject.title','Rechazar incidencia'); d.setdefault('issues.reject.motivo','Motivo del rechazo'); d.setdefault('issues.reject.error.motivo_required','El motivo es obligatorio')
-    d.setdefault('issues.group.title','Agrupar incidencias en un caso'); d.setdefault('issues.group.button','Agrupar incidencias'); d.setdefault('issues.group.confirm','Agrupar las incidencias seleccionadas'); d.setdefault('issues.group.keep_note','La incidencia más antigua pasa a ser el caso; el resto queda vinculada a ella y se gestiona desde ahí.'); d.setdefault('issues.group.empty','No hay incidencias que se puedan agrupar ahora'); d.setdefault('issues.group.children','Incidencias de este caso'); d.setdefault('issues.group.case_of','Caso de'); d.setdefault('issues.group.child_of','Forma parte del caso'); d.setdefault('issues.group.manage_here','Esta incidencia pertenece a un caso: gestionála desde ahí.'); d.setdefault('issues.group.ungroup','Desvincular del caso'); d.setdefault('issues.group.error.too_few','Seleccioná al menos dos incidencias'); d.setdefault('issues.group.error.child_selected','Una de las incidencias seleccionadas ya pertenece a un caso'); d.setdefault('issues.group.error.master_selected','Una de las incidencias seleccionadas ya es un caso'); d.setdefault('issues.group.error.terminal','Las incidencias cerradas no se pueden agrupar'); d.setdefault('issues.group.error.state_mismatch','Todas las incidencias deben estar en el mismo estado'); d.setdefault('issues.group.error.asset_mismatch','Todas las incidencias deben ser sobre el mismo activo'); d.setdefault('issues.group.error.failed','No se pudieron agrupar las incidencias'); d.setdefault('issues.group.error.child_locked','El responsable se gestiona desde el caso')
+    d.setdefault('issues.group.title','Agrupar incidencias en un caso'); d.setdefault('issues.group.button','Agrupar incidencias'); d.setdefault('issues.group.confirm','Agrupar las incidencias seleccionadas'); d.setdefault('issues.group.keep_note','La incidencia más antigua pasa a ser el caso; el resto queda vinculada a ella y se gestiona desde ahí.'); d.setdefault('issues.group.empty','No hay incidencias que se puedan agrupar ahora'); d.setdefault('issues.group.children','Incidencias de este caso'); d.setdefault('issues.group.case_of','Caso de'); d.setdefault('issues.group.child_of','Forma parte del caso'); d.setdefault('issues.group.manage_here','Esta incidencia pertenece a un caso: adminístrela desde ahí.'); d.setdefault('issues.group.ungroup','Desvincular del caso'); d.setdefault('issues.group.error.too_few','Seleccione al menos dos incidencias'); d.setdefault('issues.group.error.child_selected','Una de las incidencias seleccionadas ya pertenece a un caso'); d.setdefault('issues.group.error.master_selected','Una de las incidencias seleccionadas ya es un caso'); d.setdefault('issues.group.error.terminal','Las incidencias cerradas no se pueden agrupar'); d.setdefault('issues.group.error.state_mismatch','Todas las incidencias deben estar en el mismo estado'); d.setdefault('issues.group.error.asset_mismatch','Todas las incidencias deben ser sobre el mismo activo'); d.setdefault('issues.group.error.failed','No se pudieron agrupar las incidencias'); d.setdefault('issues.group.error.child_locked','El responsable se gestiona desde el caso')
     d.setdefault('issues.priority.label','Prioridad'); d.setdefault('issues.severity.label','Severidad'); d.setdefault('issues.template_label','Plantilla'); d.setdefault('issues.form_data','Campos adicionales'); d.setdefault('issues.error.title_required','El título es obligatorio')
-    d.setdefault('issues.photos.hint','Hasta 10 fotos de 20 MB cada una (JPG, PNG, WebP o GIF)'); d.setdefault('issues.photos.empty','Sin fotos adjuntas'); d.setdefault('issues.photos.error.too_many','Podés adjuntar hasta 10 fotos'); d.setdefault('issues.photos.error.too_large','Cada foto debe pesar 20 MB o menos'); d.setdefault('issues.photos.error.invalid_type','Solo se permiten imágenes JPG, PNG, WebP o GIF'); d.setdefault('issues.photos.error.invalid','No se pudo leer la foto')
+    d.setdefault('issues.photos.hint','Hasta 10 fotos de 20 MB cada una (JPG, PNG, WebP o GIF)'); d.setdefault('issues.photos.empty','Sin fotos adjuntas'); d.setdefault('issues.photos.error.too_many','Puede adjuntar hasta 10 fotos'); d.setdefault('issues.photos.error.too_large','Cada foto debe pesar 20 MB o menos'); d.setdefault('issues.photos.error.invalid_type','Solo se permiten imágenes JPG, PNG, WebP o GIF'); d.setdefault('issues.photos.error.invalid','No se pudo leer la foto')
     d.setdefault('issues.templates','Plantillas'); d.setdefault('issues.templates.list_title','Plantillas de Incidencias'); d.setdefault('issues.templates.new','Nueva Plantilla'); d.setdefault('issues.templates.edit_title','Editar Plantilla'); d.setdefault('issues.templates.detail_title','Plantilla'); d.setdefault('issues.templates.empty','Aún no hay plantillas'); d.setdefault('issues.templates.name','Nombre'); d.setdefault('issues.templates.name_placeholder','p. ej. Reporte de falla de bomba'); d.setdefault('issues.templates.description','Descripción'); d.setdefault('issues.templates.fields','Campos'); d.setdefault('issues.templates.fields_hint','Campos adicionales que se muestran al usar esta plantilla'); d.setdefault('issues.templates.add_field','Agregar Campo'); d.setdefault('issues.templates.no_fields','Sin campos definidos'); d.setdefault('issues.templates.version','Versión'); d.setdefault('issues.templates.current','Actual'); d.setdefault('issues.templates.versions','Versiones'); d.setdefault('issues.templates.assigned_types','Tipos de Activo Asignados'); d.setdefault('issues.templates.assign','Guardar Asignaciones'); d.setdefault('issues.templates.assign_hint','Cuando se selecciona un activo de un tipo marcado, se usa esta plantilla'); d.setdefault('issues.templates.no_asset_types','No hay tipos de activo definidos'); d.setdefault('issues.templates.create','Crear Plantilla'); d.setdefault('issues.templates.save_changes','Guardar Cambios'); d.setdefault('issues.templates.delete','Eliminar Plantilla'); d.setdefault('issues.templates.confirm_delete','¿Eliminar esta plantilla?'); d.setdefault('issues.templates.not_found','Plantilla no encontrada'); d.setdefault('issues.templates.error.name_required','El nombre es obligatorio'); d.setdefault('issues.templates.error.duplicate_key','Ya existe una plantilla con ese nombre')
 elif L == 'pt':
     d.setdefault('issues.state.reported','Reportada'); d.setdefault('issues.state.triaged','Em triagem'); d.setdefault('issues.state.in_progress','Em Andamento'); d.setdefault('issues.state.on_hold','Em espera'); d.setdefault('issues.state.resolved','Resolvida'); d.setdefault('issues.state.closed','Fechada'); d.setdefault('issues.state.rejected','Rejeitada'); d.setdefault('issues.state.duplicate','Duplicada')
@@ -519,7 +519,7 @@ _TRACK_KEYS = {
         'qr.track.title': 'Seguimiento de incidencia',
         'qr.track.card_title': 'Tu incidencia',
         'qr.track.new_title': '¡Gracias! Tu reporte fue registrado',
-        'qr.track.new_hint': 'Guardá el enlace de abajo: es la única forma de consultar este reporte sin iniciar sesión.',
+        'qr.track.new_hint': 'Guarde el enlace de abajo: es la única forma de consultar este reporte sin iniciar sesión.',
         'qr.track.issue_number': 'Número de incidencia',
         'qr.track.reported_at': 'Reportada el',
         'qr.track.step.reported': 'Reportada',
@@ -538,7 +538,7 @@ _TRACK_KEYS = {
         'qr.track.activity.close': 'Cerrada',
         'qr.track.activity.reject': 'Rechazada',
         'qr.track.activity.merge': 'Marcada como duplicada',
-        'qr.track.link.title': 'Guardá este enlace',
+        'qr.track.link.title': 'Guarde este enlace',
         'qr.track.link.hint': 'Con este enlace podés volver a consultar el estado de tu reporte sin iniciar sesión.',
         'qr.track.link.warning': 'Este enlace es el único acceso a tu reporte. Si lo perdés, no vas a poder consultar el estado nuevamente.',
         'qr.track.link.copy': 'Copiar',
@@ -554,7 +554,7 @@ _TRACK_KEYS = {
         'issues.tracking.expires_at': 'El enlace vence',
         'issues.tracking.expired': 'Este enlace de seguimiento venció.',
         'issues.group.track_mode': 'Seguimiento público de los hijos',
-        'issues.group.track_mode.hint': 'Elegí cómo se comportarán los enlaces públicos de las incidencias hijas a partir de ahora.',
+        'issues.group.track_mode.hint': 'Elija cómo se comportarán los enlaces públicos de las incidencias hijas a partir de ahora.',
         'issues.group.track_mode.independent': 'Independiente (cada hijo conserva su propia página)',
         'issues.group.track_mode.case': 'Mostrar el caso (los hijos muestran el avance del caso)',
         'issues.group.track_mode.notice': 'Aviso con enlace (los hijos muestran un enlace al caso)',
@@ -967,6 +967,51 @@ _NOTIFY_KEYS = {
     },
 }
 
+_ASSET_QR_KEYS = {
+    'en': {
+        'field.image.add': 'Add photos',
+        'field.image.drag_hint': 'or drag them here',
+        'qr.invalid_title': 'Invalid QR Code',
+        'qr.invalid_message': 'The QR code is invalid or malformed.',
+        'qr.asset_not_found_title': 'Asset Not Found',
+        'qr.asset_not_found_message': 'The asset linked to this QR code no longer exists.',
+    },
+    'es': {
+        'field.image.add': 'Agregar fotos',
+        'field.image.drag_hint': 'o arrástralas aquí',
+        'qr.invalid_title': 'Código QR Inválido',
+        'qr.invalid_message': 'El código QR es inválido o está mal formado.',
+        'qr.asset_not_found_title': 'Activo No Encontrado',
+        'qr.asset_not_found_message': 'El activo vinculado a este código QR ya no existe.',
+    },
+    'pt': {
+        'field.image.add': 'Adicionar fotos',
+        'field.image.drag_hint': 'ou arraste-as aqui',
+        'qr.invalid_title': 'Código QR Inválido',
+        'qr.invalid_message': 'O código QR é inválido ou está malformado.',
+        'qr.asset_not_found_title': 'Ativo Não Encontrado',
+        'qr.asset_not_found_message': 'O ativo vinculado a este código QR não existe mais.',
+    },
+    'ja': {
+        'field.image.add': '写真を追加',
+        'field.image.drag_hint': 'またはここにドラッグ',
+        'qr.invalid_title': '無効なQRコード',
+        'qr.invalid_message': 'QRコードが無効または不正な形式です。',
+        'qr.asset_not_found_title': '資産が見つかりません',
+        'qr.asset_not_found_message': 'このQRコードにリンクされた資産はもう存在しません。',
+    },
+}
+
+_FORCE_KEYS = {
+    'en': {'issues.history.action.merge': 'Marked duplicate'},
+    'es': {
+        'issues.history.action.merge': 'Marcada duplicada',
+        'qr.track.link.hint': 'Con este enlace puede volver a consultar el estado de tu reporte sin iniciar sesión.',
+    },
+    'pt': {'issues.history.action.merge': 'Marcada duplicada'},
+    'ja': {'issues.history.action.merge': '重複として記録'},
+}
+
 _LIFECYCLE_KEYS = {
     'en': {
         'issues.action.hold': 'Hold',
@@ -996,15 +1041,15 @@ _LIFECYCLE_KEYS = {
         'issues.merge.title': 'Marcar como duplicada',
         'issues.merge.help': 'Esta incidencia se cerrará como duplicada de la incidencia elegida, que conserva su propio ciclo de vida.',
         'issues.forms.merge.field.canonical_id': 'Incidencia canónica',
-        'issues.forms.merge.field.canonical_id.help': 'Buscá por título o número. La incidencia elegida sigue abierta.',
-        'issues.merge.error.canonical_required': 'Seleccioná la incidencia canónica',
+        'issues.forms.merge.field.canonical_id.help': 'Busque por título o número. La incidencia elegida sigue abierta.',
+        'issues.merge.error.canonical_required': 'Seleccione la incidencia canónica',
         'issues.merge.error.self': 'Una incidencia no puede ser duplicada de sí misma',
         'issues.merge.error.not_found': 'La incidencia canónica no existe',
         'issues.merge.error.terminal': 'La incidencia canónica ya está cerrada',
         'issues.merge.error.group': 'La incidencia canónica pertenece a un caso o agrupa otras incidencias',
         'issues.merge.error.state_invalid': 'Solo se pueden marcar como duplicadas las incidencias abiertas',
         'issues.merge.error.has_children': 'Un caso con incidencias no puede marcarse como duplicado',
-        'issues.merge.error.child': 'Esta incidencia pertenece a un caso: gestionála desde ahí',
+        'issues.merge.error.child': 'Esta incidencia pertenece a un caso: adminístrela desde ahí',
         'issues.merge.error.failed': 'No se pudo marcar la incidencia como duplicada',
         'issues.history.action.hold': 'Puesta en espera',
         'issues.history.action.resume': 'Reanudada',
@@ -1069,10 +1114,11 @@ for _k, _v in _QR_REPORT_KEYS.get(L, {}).items():
 for _k, _v in _TRACK_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
 
-# The old /done confirmation was replaced by /track/{token}; remove the keys
-# a previous merge wrote into locale files that already exist.
-for _k in ('qr.report.done_title', 'qr.report.done_message', 'qr.report.done_hint'):
-    d.pop(_k, None)
+for _k, _v in _ASSET_QR_KEYS.get(L, {}).items():
+    d.setdefault(_k, _v)
+
+for _k, _v in _FORCE_KEYS.get(L, {}).items():
+    d[_k] = _v
 
 with open(p, 'w', encoding='utf-8') as f:
     json.dump(d, f, indent=2, ensure_ascii=False)

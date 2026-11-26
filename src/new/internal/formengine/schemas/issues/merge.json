@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "canonical_id": {
+      "type": "integer",
+      "title": "Canonical issue",
+      "x-seam-input": "any-picker",
+      "x-seam-source": "entity:issues"
+    }
+  }
+}
