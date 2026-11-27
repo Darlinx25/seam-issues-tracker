@@ -3450,3 +3450,111 @@ func TestPickerSearch_IssuesEntity(t *testing.T) {
 		t.Errorf("unexpected picker result: %+v", results[0])
 	}
 }
+
+// TestIssueStart_QRWithoutAssigneeRefused keeps an anonymous report unowned
+// until an admin assigns someone: not even an admin may start it before then.
+func TestIssueStart_QRWithoutAssigneeRefused(t *testing.T) {
+	walked := false
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Leaking valve", "state": "triaged",
+				"channel": "qr", "machine_id": float64(1),
+			})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "triaged", "current": "in_progress", "terminal": false})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueFormAs(t, h.IssueStart, "1", "/issues/1/start", url.Values{}, "admin", 42)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", rec.Code)
+	}
+	if walked {
+		t.Error("a QR report without assignee must not be started")
+	}
+}
+
+// TestIssueDetail_QRAnonymousShowsContact proves the detail reads the frozen
+// contact answers instead of showing an invented reporter identity.
+func TestIssueDetail_QRAnonymousShowsContact(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Leaking valve", "state": "reported", "channel": "qr",
+				"form_data": map[string]any{
+					qrReportContactName:     "Ana Pérez",
+					qrReportContactDocument: "ID-123",
+					qrReportContactPhone:    "+57 300 1234567",
+					qrReportContactEmail:    "ana@example.com",
+				},
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := getIssueDetailAs(t, h.IssueDetail, "1", "admin", 42)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"issues.reported_by.anonymous",
+		"Ana Pérez", "ID-123", "+57 300 1234567", "ana@example.com",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected the detail to contain %q", want)
+		}
+	}
+}
+
+// TestIssueDetail_TerminalHidesSLA keeps resolved-time cards out of closed,
+// rejected and duplicate issues: the clock no longer means anything there.
+func TestIssueDetail_TerminalHidesSLA(t *testing.T) {
+	tf := func(key string, args ...any) string { return key }
+	data := IssueDetailData{Issue: Issue{
+		Title:                    "Closed",
+		State:                    "closed",
+		SLAFirstResponseDeadline: "2030-01-01T00:00:00Z",
+		SLAResolutionDeadline:    "2030-01-02T00:00:00Z",
+		CreatedAt:                "2029-01-01T00:00:00Z",
+	}}
+	var buf bytes.Buffer
+	if err := IssueDetailPage(data, tf)(&mi.Builder{}).Render(&buf); err != nil {
+		t.Fatalf("render detail: %v", err)
+	}
+	for _, hidden := range []string{"issues.sla.first_response", "issues.sla.resolution"} {
+		if strings.Contains(buf.String(), hidden) {
+			t.Errorf("terminal issue must not render %q", hidden)
+		}
+	}
+}
+
+// TestIssueTemplateDetailPage_ShowsAssignedTemplateName refuses to leak the
+// assignment's underscore key when a human-readable template name is known.
+func TestIssueTemplateDetailPage_ShowsAssignedTemplateName(t *testing.T) {
+	tf := func(key string, args ...any) string { return key }
+	page := IssueTemplateDetailPage(IssueTemplateDetailData{
+		Key:           "this_template",
+		Name:          "This template",
+		Version:       1,
+		AssetTypes:    []TemplateAssetType{{ID: 1, Name: "Pump"}},
+		Assigned:      map[int64]string{1: "other_template"},
+		AssignedNames: map[string]string{"other_template": "Other Template"},
+	}, tf)
+	var buf bytes.Buffer
+	if err := page(&mi.Builder{}).Render(&buf); err != nil {
+		t.Fatalf("render template detail: %v", err)
+	}
+	if !strings.Contains(buf.String(), "issues.templates.assigned_other: Other Template") {
+		t.Errorf("expected the assigned template name, got %q", buf.String())
+	}
+}

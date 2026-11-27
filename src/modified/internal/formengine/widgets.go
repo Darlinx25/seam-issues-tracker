@@ -1005,12 +1005,19 @@ func renderCheckboxLike(toggle bool) widgetRenderer {
 			if checked {
 				inputAttrs = append(inputAttrs, mi.Checked())
 			}
+			if f.Required {
+				inputAttrs = append(inputAttrs, mi.Required())
+			}
+			labelText := f.Title
+			if f.Required {
+				labelText += " *"
+			}
 
 			if !toggle {
 				inputAttrs = append(inputAttrs, mi.Class("h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"))
 				return b.Label(mi.Class("inline-flex items-center gap-2"),
 					b.Input(inputAttrs...),
-					b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), f.Title),
+					b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), labelText),
 				)
 			}
 
@@ -1022,7 +1029,7 @@ func renderCheckboxLike(toggle bool) widgetRenderer {
 					"after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full "+
 					"after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"),
 				),
-				b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), f.Title),
+				b.Span(mi.Class("text-sm text-gray-700 dark:text-gray-300"), labelText),
 			)
 		}
 	}

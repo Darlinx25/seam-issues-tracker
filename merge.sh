@@ -108,6 +108,10 @@ else
     echo "  (src/new/ not found, skipping)"
 fi
 
+# The photo fields are now native minty inputs; no merged tree may keep the
+# old preview script from a previous merge of the same output directory.
+rm -f "$OUTPUT_DIR/web/static/js/issue-photo-field.js"
+
 # Step 4: Apply patches
 echo "[4/8] Applying patches..."
 find "$OUTPUT_DIR" \( -name '*.rej' -o -name '*.orig' \) -delete
@@ -276,6 +280,10 @@ required_keys = (
     "issue_qr.contact.ask_hint",
     "issue_qr.contact.required",
     "issue_qr.contact.required_hint",
+    "issues.reported_by.anonymous",
+    "issues.error.start_requires_assignee",
+    "issues.templates.assigned_other",
+    "issues.photos.error.heic_unsupported",
 )
 for lang, expected in expected_merge.items():
     locale_path = root / f"internal/i18n/locales/{lang}.json"

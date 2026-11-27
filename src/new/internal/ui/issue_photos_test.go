@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -91,19 +92,20 @@ func TestIssueTemplateFields_RendersNativePhotoInput(t *testing.T) {
 		`type="file"`,
 		`multiple`,
 		`accept="image/*"`,
-		`data-issue-photo-preview`,
-		`absolute w-px h-px opacity-0 overflow-hidden`,
-		`focus-within:ring-2`,
+		`block w-full text-sm`,
+		`file:rounded-lg`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected photo field markup to contain %q", want)
 		}
 	}
-	// app.css unhides .sr-only on focus, which would reveal the browser's
-	// native file control (button + filename) right after a click. The input
-	// must use a hidden utility that does not have that focus override.
+	// The control must be visible: a hidden input would again need script to
+	// restore the selected files after a validation re-render.
 	if strings.Contains(body, "sr-only") {
-		t.Error("the photo input must not use sr-only: app.css reveals it on focus")
+		t.Error("the photo input must be visible, not sr-only")
+	}
+	if strings.Contains(body, "issue-photo-field.js") {
+		t.Error("the photo field must not depend on JavaScript")
 	}
 }
 
@@ -220,5 +222,65 @@ func TestPrepareIssuePhotos_RequiredFieldEmpty(t *testing.T) {
 
 	if errs["photo"] != "field.required" {
 		t.Errorf("expected field.required, got %q", errs["photo"])
+	}
+}
+
+// TestPrepareIssuePhotos_RejectsHEIC gives iPhone photos a clear answer
+// instead of the generic invalid-type message.
+func TestPrepareIssuePhotos_RejectsHEIC(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	heic := []byte("\x00\x00\x00\x18ftypheic\x00\x00\x00\x00heicmif1")
+	req := newIssuePhotoUploadRequest(t, nil, issuePhotoFieldName("photo"), "photo.heic", heic)
+	if err := parseIssueFormRequest(req); err != nil {
+		t.Fatalf("parse multipart: %v", err)
+	}
+	tpl := &IssueTemplate{Fields: []TemplateField{{Key: "photo", Label: "Photos", Type: "image"}}}
+	files, errs := h.prepareIssuePhotos(req, tpl, h.translateFunc(nil))
+
+	if len(files) != 0 {
+		t.Errorf("expected no accepted files, got %d", len(files))
+	}
+	if errs["photo"] != "issues.photos.error.heic_unsupported" {
+		t.Errorf("expected the HEIC error, got %q", errs["photo"])
+	}
+}
+
+// TestPrepareIssuePhotos_EnforcesTenPerField is the server-side half of the
+// limit: no browser attribute can enforce it, so the report must be refused.
+func TestPrepareIssuePhotos_EnforcesTenPerField(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for i := 0; i < maxIssuePhotosPerField+1; i++ {
+		part, err := w.CreateFormFile(issuePhotoFieldName("photo"), "photo-"+strconv.Itoa(i)+".png")
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		if _, err := part.Write([]byte(issuePhotoTestPNG)); err != nil {
+			t.Fatalf("write photo bytes: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/issues", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	if err := parseIssueFormRequest(req); err != nil {
+		t.Fatalf("parse multipart: %v", err)
+	}
+	tpl := &IssueTemplate{Fields: []TemplateField{{Key: "photo", Label: "Photos", Type: "image"}}}
+	files, errs := h.prepareIssuePhotos(req, tpl, h.translateFunc(nil))
+
+	if len(files) != 0 {
+		t.Errorf("expected no accepted files, got %d", len(files))
+	}
+	if errs["photo"] != "issues.photos.error.too_many" {
+		t.Errorf("expected the too-many error, got %q", errs["photo"])
 	}
 }

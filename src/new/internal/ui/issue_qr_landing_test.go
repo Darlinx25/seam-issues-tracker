@@ -108,6 +108,15 @@ func TestIssueQRReportPage_IsAnonymous(t *testing.T) {
 	}
 }
 
+// TestIssueQRReportPage_HasNoPhotoScript keeps the anonymous form independent
+// of JavaScript: on a phone the selected photos must be posted by the browser.
+func TestIssueQRReportPage_HasNoPhotoScript(t *testing.T) {
+	body := renderQRReportPage(t, qrReportTestData())
+	if strings.Contains(body, "issue-photo-field.js") {
+		t.Error("the QR report must not load the old photo-preview script")
+	}
+}
+
 // TestIssueQRReportPage_PrefillsValuesAndErrors covers a rejected submission:
 // the answers survive and each error lands under its own field.
 func TestIssueQRReportPage_PrefillsValuesAndErrors(t *testing.T) {

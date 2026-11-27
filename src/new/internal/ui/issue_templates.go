@@ -385,10 +385,8 @@ func (h *UIHandler) renderTemplateFields(ctx context.Context, tpl *IssueTemplate
 }
 
 // renderIssuePhotoField renders the multi-photo picker of one "image" template
-// field. The native file input is the real control: without JavaScript the
-// browser still submits every selected file, and the small script in
-// web/static/js/issue-photo-field.js only adds the thumbnail preview and the
-// per-photo remove button on top of it.
+// field as a native minty input. The browser owns the whole control: selected
+// files survive validation re-renders and are submitted without JavaScript.
 func renderIssuePhotoField(b *mi.Builder, f TemplateField, errMsg string, t func(key string, args ...any) string) mi.Node {
 	if t == nil {
 		t = func(key string, args ...any) string { return key }
@@ -404,8 +402,7 @@ func renderIssuePhotoField(b *mi.Builder, f TemplateField, errMsg string, t func
 		mi.Name(issuePhotoFieldName(f.Key)),
 		mi.Attr("multiple", ""),
 		mi.Attr("accept", "image/*"),
-		mi.Class("absolute w-px h-px opacity-0 overflow-hidden"),
-		mi.Attr("data-issue-photo-input", ""),
+		mi.Class("block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-indigo-700 hover:file:bg-indigo-100 dark:text-gray-300 dark:file:bg-indigo-950/40 dark:file:text-indigo-300"),
 	}
 	if f.Required {
 		inputAttrs = append(inputAttrs, mi.Required())
@@ -414,19 +411,12 @@ func renderIssuePhotoField(b *mi.Builder, f TemplateField, errMsg string, t func
 	if f.Required {
 		requiredMark = b.Span(mi.Class("text-red-500"), " *")
 	}
-	return b.Div(mi.Class("space-y-2"), mi.Attr("data-issue-photo-field", ""),
+	return b.Div(mi.Class("space-y-2"),
 		b.Label(mi.For(inputID), mi.Class("block text-sm font-medium text-gray-700 dark:text-gray-300"),
 			b.Text(label),
 			requiredMark,
 		),
-		b.Div(mi.Class("grid grid-cols-2 sm:grid-cols-3 gap-2"), mi.Attr("data-issue-photo-preview", "")),
-		b.Label(mi.For(inputID),
-			mi.Class("flex flex-col items-center gap-1.5 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 px-4 py-5 text-center cursor-pointer hover:border-indigo-500 dark:hover:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2 dark:focus-within:ring-indigo-400 dark:focus-within:ring-offset-gray-800 transition-colors"),
-			b.Span(mi.Class("material-icons text-indigo-600 dark:text-indigo-400"), "add_a_photo"),
-			b.Span(mi.Class("text-sm font-medium text-indigo-600 dark:text-indigo-400"), t("field.image.add")),
-			b.Span(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("field.image.drag_hint")),
-			b.Input(inputAttrs...),
-		),
+		b.Input(inputAttrs...),
 		b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issues.photos.hint")),
 		issuePhotoFieldError(b, errMsg),
 	)
@@ -612,16 +602,17 @@ func (h *UIHandler) IssueTemplateDetail(w http.ResponseWriter, r *http.Request) 
 	assetTypes, assignments := h.loadAssignments(ctx)
 
 	data := IssueTemplateDetailData{
-		Key:         key,
-		Name:        current.Name,
-		Description: current.Description,
-		Version:     current.Version,
-		Fields:      current.Fields,
-		Versions:    versions,
-		AssetTypes:  assetTypes,
-		Assigned:    assignments,
-		CSRFToken:   h.GetCSRFToken(w, r),
-		SLAConfig:   current.SLAConfig,
+		Key:           key,
+		Name:          current.Name,
+		Description:   current.Description,
+		Version:       current.Version,
+		Fields:        current.Fields,
+		Versions:      versions,
+		AssetTypes:    assetTypes,
+		Assigned:      assignments,
+		AssignedNames: h.loadIssueTemplateNames(ctx),
+		CSRFToken:     h.GetCSRFToken(w, r),
+		SLAConfig:     current.SLAConfig,
 	}
 	h.page.Render(w, r, t("issues.templates.detail_title")+": "+current.Name, "/issues", IssueTemplateDetailPage(data, t))
 }
@@ -648,6 +639,25 @@ func (h *UIHandler) loadAssignments(ctx context.Context) ([]TemplateAssetType, m
 		}
 	}
 	return types, assignments
+}
+
+// loadIssueTemplateNames resolves current template keys to their human names.
+// The assignment rows only keep keys; the detail page must not show a slug.
+func (h *UIHandler) loadIssueTemplateNames(ctx context.Context) map[string]string {
+	names := map[string]string{}
+	res, err := h.xoluClient.OQL(ctx,
+		"SELECT * FROM "+issueTemplatesEntity+" WHERE is_current = 1 AND deleted = 0")
+	if err != nil || res == nil {
+		return names
+	}
+	for _, row := range res.Data {
+		key := toString(row["key"])
+		if key == "" {
+			continue
+		}
+		names[key] = toString(row["name"])
+	}
+	return names
 }
 
 // IssueTemplateEdit handles GET /issue-templates/{key}/edit -- the editor
@@ -1111,16 +1121,17 @@ func issueTemplateEditorScript(fieldTypes []string, requiredLabel string) string
 
 // IssueTemplateDetailData holds data for the template detail page.
 type IssueTemplateDetailData struct {
-	Key         string
-	Name        string
-	Description string
-	Version     int
-	Fields      []TemplateField
-	Versions    []IssueTemplate
-	AssetTypes  []TemplateAssetType
-	Assigned    map[int64]string
-	CSRFToken   string
-	SLAConfig   map[string]map[string]int64
+	Key           string
+	Name          string
+	Description   string
+	Version       int
+	Fields        []TemplateField
+	Versions      []IssueTemplate
+	AssetTypes    []TemplateAssetType
+	Assigned      map[int64]string
+	AssignedNames map[string]string
+	CSRFToken     string
+	SLAConfig     map[string]map[string]int64
 }
 
 // IssueTemplateDetailPage renders a template's current fields, its version
@@ -1178,7 +1189,12 @@ func IssueTemplateDetailPage(data IssueTemplateDetailData, t func(key string, ar
 					b.Label(mi.Class("flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300"), chk, b.Text(at.Name)),
 				}
 				if assignedKey != "" && assignedKey != data.Key {
-					row = append(row, b.Span(mi.Class("text-xs text-amber-600"), assignedKey))
+					assignedLabel := data.AssignedNames[assignedKey]
+					if assignedLabel == "" {
+						assignedLabel = assignedKey
+					}
+					row = append(row, b.Span(mi.Class("text-xs text-amber-600"),
+						t("issues.templates.assigned_other")+": "+assignedLabel))
 				}
 				assignRows = append(assignRows, b.Div(append([]interface{}{mi.Class("px-4 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0")}, row...)...))
 			}

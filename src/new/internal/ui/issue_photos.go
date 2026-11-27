@@ -85,6 +85,22 @@ func allowedIssuePhotoType(contentType string) bool {
 	}
 }
 
+// isHEICImage recognises HEIC/HEIF files by their ISO BMFF "ftyp" brand. Go's
+// DetectContentType reports them as octet-stream, so they need a separate
+// check to give the user a useful error instead of "invalid type".
+func isHEICImage(head []byte) bool {
+	if len(head) < 12 || string(head[4:8]) != "ftyp" {
+		return false
+	}
+	for i := 8; i+4 <= len(head) && i < 64; i += 4 {
+		switch string(head[i : i+4]) {
+		case "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1":
+			return true
+		}
+	}
+	return false
+}
+
 // prepareIssuePhotos validates the photo fields of a report before the issue
 // is created: required fields must carry at least one file, the per-field
 // count is bounded, and every file must be a real image within the size
@@ -131,6 +147,11 @@ func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t fu
 			head := make([]byte, 512)
 			n, _ := io.ReadFull(file, head)
 			_ = file.Close()
+			if isHEICImage(head[:n]) {
+				errors[f.Key] = t("issues.photos.error.heic_unsupported")
+				valid = false
+				break
+			}
 			if !allowedIssuePhotoType(http.DetectContentType(head[:n])) {
 				errors[f.Key] = t("issues.photos.error.invalid_type")
 				valid = false

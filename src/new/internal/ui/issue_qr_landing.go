@@ -186,7 +186,6 @@ func issueQRReportPage(data issueQRReportPageData, t func(key string, args ...an
 					t("qr.report.submit"),
 				),
 			),
-			b.Script(mi.Src("/static/js/issue-photo-field.js"), mi.Defer()),
 		)
 	}
 }

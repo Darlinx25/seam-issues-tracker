@@ -57,11 +57,11 @@ type Issue struct {
 	// NotifyState and NotifyEmail are frozen at creation. When the reporter
 	// opts in, every later lifecycle transition must reach the same address
 	// even if the account changes it or is deleted.
-	NotifyState bool
-	NotifyEmail string
-	Assignee       int64
-	AssigneeName   string
-	CreatedAt      string
+	NotifyState  bool
+	NotifyEmail  string
+	Assignee     int64
+	AssigneeName string
+	CreatedAt    string
 
 	// TemplateID is the specific template version the issue was created
 	// with; FormData holds the custom field values it captured. Both are
@@ -82,6 +82,28 @@ type Issue struct {
 }
 
 const issueDefName = "seam_issue_lifecycle"
+
+// issueQRContactDetails are the anonymous reporter's contact answers, frozen
+// on the issue in form_data at report time. They are display-only here.
+type issueQRContactDetails struct {
+	Name     string
+	Document string
+	Phone    string
+	Email    string
+}
+
+func issueQRContactFromFormData(data map[string]any) issueQRContactDetails {
+	return issueQRContactDetails{
+		Name:     toString(data[qrReportContactName]),
+		Document: toString(data[qrReportContactDocument]),
+		Phone:    toString(data[qrReportContactPhone]),
+		Email:    toString(data[qrReportContactEmail]),
+	}
+}
+
+func (c issueQRContactDetails) hasValue() bool {
+	return c.Name != "" || c.Document != "" || c.Phone != "" || c.Email != ""
+}
 
 func issueFromEntity(e *xolu.Entity) Issue {
 	return Issue{
@@ -127,6 +149,9 @@ func (h *UIHandler) canActOnIssue(r *http.Request, issue Issue) bool {
 	if issue.MasterID > 0 {
 		return false
 	}
+	if !canStartIssue(issue) {
+		return false
+	}
 	u := h.getCurrentUser(r)
 	if u == nil || u.ID == 0 {
 		return false
@@ -135,6 +160,13 @@ func (h *UIHandler) canActOnIssue(r *http.Request, issue Issue) bool {
 		return true
 	}
 	return auth.RoleRank(u.Role) >= auth.RoleRank(auth.RoleAdmin)
+}
+
+// canStartIssue gates the lifecycle start. An anonymous QR report has no
+// accountable user yet: an admin must assign a responsible before anyone may
+// start it, otherwise the work would begin unowned.
+func canStartIssue(issue Issue) bool {
+	return issue.Channel != "qr" || issue.Assignee > 0
 }
 
 // buildIssueHistory maps xolu's machine history into display entries,
@@ -810,14 +842,14 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	issueData := map[string]any{
-		"title":       title,
-		"description": description,
-		"priority":    priority,
-		"severity":    severity,
-		"state":       machine.State,
-		"machine_id":  machine.ID,
-		"channel":     "app",
-		"created_at":  now.Format(time.RFC3339),
+		"title":        title,
+		"description":  description,
+		"priority":     priority,
+		"severity":     severity,
+		"state":        machine.State,
+		"machine_id":   machine.ID,
+		"channel":      "app",
+		"created_at":   now.Format(time.RFC3339),
 		"notify_state": notifyState,
 	}
 	if notifyState {
@@ -914,6 +946,8 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 
 	data := assetDetail
 	data.Issue = issue
+	data.QRAnonymous = issue.Channel == "qr"
+	data.QRContact = issueQRContactFromFormData(issue.FormData)
 	data.CSRFToken = h.GetCSRFToken(w, r)
 	data.CanAssign = h.canAssignIssue(r, issue)
 	data.CanAct = h.canActOnIssue(r, issue)
@@ -1017,6 +1051,12 @@ func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, inpu
 	}
 	issue := issueFromEntity(entity)
 
+	if input == "start" && !canStartIssue(issue) {
+		h.logger.Info("issue start refused: anonymous QR report has no responsible", "id", id)
+		h.page.RenderError(w, http.StatusForbidden, t("issues.detail_title"), t("issues.error.start_requires_assignee"))
+		return
+	}
+
 	// The lifecycle actions belong to the responsible: a third party may
 	// neither start, resolve nor close an issue that was handed to someone
 	// else. Admins keep the last word (see canActOnIssue).
@@ -1062,7 +1102,7 @@ func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if err != nil {
 		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
 		csrfToken := h.GetCSRFToken(w, r)
-		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue)}
+		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -1177,7 +1217,7 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Info("issue reject walk failed", "id", id, "error", err)
-		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue)}
+		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -1409,7 +1449,6 @@ func IssueFormPage(data IssueFormData, t func(key string, args ...any) string) m
 							),
 						),
 					),
-					b.Script(mi.Src("/static/js/issue-photo-field.js"), mi.Defer()),
 				)
 			})(b),
 		)
@@ -1543,6 +1582,11 @@ type IssueDetailData struct {
 	TemplateName string
 	FormFields   []IssueFormField
 
+	// QRAnonymous marks reports that came from the public form. The detail
+	// must show the frozen contact answers, not an invented user identity.
+	QRAnonymous bool
+	QRContact   issueQRContactDetails
+
 	// CanAssign tells the page whether the current user may (re)assign the
 	// responsible of this issue: only admins, and only while the issue is
 	// still in a pre-start state (see canAssignIssues).
@@ -1550,8 +1594,9 @@ type IssueDetailData struct {
 
 	// CanAct tells the page whether the current user may run the lifecycle
 	// actions (start, resolve, close, reject) on this issue: the
-	// responsible, or an admin. An issue without a responsible can be acted
-	// on by anyone, and a child issue never (see canActOnIssue).
+	// responsible, or an admin. An in-app issue without a responsible can be
+	// acted on by anyone; an anonymous QR report stays locked until an admin
+	// assigns someone, and a child issue never (see canActOnIssue).
 	CanAct bool
 
 	// CanUngroup tells the page whether to offer detaching this child from
@@ -1635,11 +1680,34 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					)
 				}
 			}
-			if iss.ReportedByName != "" {
+			reporterLabel := iss.ReportedByName
+			if data.QRAnonymous && reporterLabel == "" {
+				reporterLabel = t("issues.reported_by.anonymous")
+			}
+			if reporterLabel != "" {
 				children = append(children, b.Div(mi.Class("mt-4 text-sm"),
 					b.Span(mi.Class("text-gray-500 dark:text-gray-400"), t("issues.reported_by")+": "),
-					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), iss.ReportedByName),
+					b.Span(mi.Class("text-gray-700 dark:text-gray-300"), reporterLabel),
 				))
+			}
+			if data.QRAnonymous && data.QRContact.hasValue() {
+				var contactRows []interface{}
+				addContactRow := func(label, value string) {
+					if value == "" {
+						return
+					}
+					contactRows = append(contactRows, b.Div(mi.Class("flex items-center justify-between gap-3 text-sm"),
+						b.Span(mi.Class("text-gray-500 dark:text-gray-400"), label),
+						b.Span(mi.Class("text-right text-gray-700 dark:text-gray-300"), value),
+					))
+				}
+				addContactRow(t("qr.report.contact_name"), data.QRContact.Name)
+				addContactRow(t("qr.report.contact_document"), data.QRContact.Document)
+				addContactRow(t("qr.report.contact_phone"), data.QRContact.Phone)
+				addContactRow(t("qr.report.contact_email"), data.QRContact.Email)
+				children = append(children, Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
+					return b.Div(append([]interface{}{mi.Class("space-y-1")}, contactRows...)...)
+				})(b))
 			}
 			assigneeLabel := iss.AssigneeName
 			if assigneeLabel == "" {
@@ -1752,6 +1820,10 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					))
 				}
 			}
+			if !canStartIssue(iss) && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+				actionBar = append(actionBar, b.Div(mi.Class("text-sm text-amber-600 dark:text-amber-400"),
+					t("issues.error.start_requires_assignee")))
+			}
 			if data.CanAssign {
 				actionBar = append(actionBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
 					mi.Class(issueActionClass(issueActionSecondary)),
@@ -1843,7 +1915,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 
 		var slaCard mi.Node
 		isTerminal := iss.State == "closed" || iss.State == "rejected" || iss.State == "duplicate"
-		showFirst := iss.FirstResponseAt == "" && iss.SLAFirstResponseDeadline != ""
+		showFirst := iss.FirstResponseAt == "" && iss.SLAFirstResponseDeadline != "" && !isTerminal
 		showRes := !showFirst && iss.FirstResponseAt != "" && iss.SLAResolutionDeadline != "" && !isTerminal
 		if showFirst || showRes {
 			var title string

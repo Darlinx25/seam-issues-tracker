@@ -1,0 +1,21 @@
+--- a/web/static/js/app.js
++++ b/web/static/js/app.js
+@@ -858,5 +858,10 @@
+     var empty = !o || o.value === '';
+     fillOption(st.label, o ? o.getAttribute('data-icon') : '', o ? o.textContent : '', sel.getAttribute('data-ss-icon-pos') === 'right');
++    if (sel.required) {
++      var mark = el('span', '', ' *');
++      mark.style.color = '#dc2626';
++      st.label.appendChild(mark);
++    }
+     st.trigger.classList.toggle('fe-ss-placeholder', empty);
+     st.trigger.disabled = !!sel.disabled;
+     st.wrap.classList.toggle('fe-ss-disabled', !!sel.disabled);
+@@ -908,6 +913,6 @@
+     if (window.MutationObserver) {
+       new MutationObserver(function () { refresh(sel); })
+-        .observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
++        .observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected', 'required'] });
+     }
+     if (sel.form) sel.form.addEventListener('reset', function () { setTimeout(function () { refresh(sel); }, 0); });
+   }
