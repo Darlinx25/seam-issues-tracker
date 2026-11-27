@@ -234,6 +234,19 @@ func (h *UIHandler) IssueAssign(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("issue assigned but patch failed", "id", id, "error", err)
 	}
 
+	if newState, ok := patchData["state"].(string); ok && newState != "" && newState != issue.State {
+		actorID := int64(0)
+		if u := h.getCurrentUser(r); u != nil {
+			actorID = u.ID
+		}
+		if issue.AssetName == "" && issue.AssetID > 0 {
+			if asset, err := h.xoluClient.Get(ctx, "assets", issue.AssetID); err == nil {
+				issue.AssetName = toString(asset.Data["name"])
+			}
+		}
+		h.notifyIssueStateChange(ctx, t, issue, newState, actorID)
+	}
+
 	// The responsible of a case is the responsible of the group: hand it to
 	// every child, triaging them too when the case itself was triaged.
 	if issue.MasterID == 0 {

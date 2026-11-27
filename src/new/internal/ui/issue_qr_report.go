@@ -347,6 +347,25 @@ func (h *UIHandler) IssueQRReport(w http.ResponseWriter, r *http.Request) {
 		h.storeIssuePhotos(ctx, entity.ID, photoUploads, uploadedBy)
 	}
 
+	issue := issueFromEntity(entity)
+	if issue.TrackToken == "" {
+		issue.TrackToken = trackToken
+	}
+	if !issue.NotifyState && notifyState {
+		issue.NotifyState = true
+		issue.NotifyEmail = values.ContactEmail
+	}
+	if issue.State == "" {
+		issue.State = machine.State
+	}
+	if issue.Title == "" {
+		issue.Title = values.Title
+	}
+	if issue.AssetName == "" {
+		issue.AssetName = values.AssetName
+	}
+	h.notifyIssueCreated(ctx, t, issue)
+
 	// The tracking page is addressed by the opaque token, never by the issue
 	// id: the anonymous channel does not hand out a handle on the record.
 	http.Redirect(w, r, issueTrackLinkPrefix+trackToken+"?new=1", http.StatusSeeOther)

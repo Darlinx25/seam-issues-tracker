@@ -15,11 +15,19 @@ import (
 )
 
 func notifyTestTranslator(key string, args ...any) string {
-	// The real translator resolves the key first and only then applies the
-	// arguments; mirror that here instead of formatting the key itself.
 	templates := map[string]string{
-		"issues.notification.subject": "Issue #%d changed to %s",
-		"issues.state.in_progress":    "In Progress",
+		"issues.notification.subject":                        "Issue \"%s\": %s",
+		"issues.notification.body":                           "Issue: **%s**\nAsset: **%s**\nStatus: **%s**",
+		"issues.notification.body_no_asset":                  "Issue: **%s**\nStatus: **%s**",
+		"issues.notification.body_with_link":                 "Issue: **%s**\nAsset: **%s**\nStatus: **%s**\n\nTrack it here: %s",
+		"issues.notification.body_no_asset_with_link":        "Issue: **%s**\nStatus: **%s**\n\nTrack it here: %s",
+		"issues.notification.created.subject":                "Issue \"%s\": %s",
+		"issues.notification.created.body":                   "Issue: **%s**\nAsset: **%s**\nStatus: **%s**",
+		"issues.notification.created.body_no_asset":          "Issue: **%s**\nStatus: **%s**",
+		"issues.notification.created.body_with_link":         "Issue: **%s**\nAsset: **%s**\nStatus: **%s**\n\nTrack it here: %s",
+		"issues.notification.created.body_no_asset_with_link": "Issue: **%s**\nStatus: **%s**\n\nTrack it here: %s",
+		"issues.state.reported":                              "Reported",
+		"issues.state.in_progress":                           "In Progress",
 	}
 	if tpl, ok := templates[key]; ok {
 		return fmt.Sprintf(tpl, args...)
@@ -87,7 +95,7 @@ func TestNotifyIssueStateChange_SendsEmailRequest(t *testing.T) {
 	if gotAuth != "Bearer test-key" {
 		t.Errorf("Authorization = %q", gotAuth)
 	}
-	if !strings.HasPrefix(gotKey, "issue-42-in_progress-") {
+	if !strings.HasPrefix(gotKey, "issue-42-state_change-") {
 		t.Errorf("Idempotency-Key = %q", gotKey)
 	}
 	if body["category"] != "issue" || body["severity"] != "error" {
@@ -109,8 +117,120 @@ func TestNotifyIssueStateChange_SendsEmailRequest(t *testing.T) {
 	if !ok || content["format"] != "markdown" {
 		t.Errorf("content = %#v", body["content"])
 	}
-	if subject, _ := content["subject"].(string); !strings.Contains(subject, "42") || !strings.Contains(subject, "In Progress") {
+	if subject, _ := content["subject"].(string); subject != "Issue \"Pump down\": In Progress" {
 		t.Errorf("subject = %q", subject)
+	}
+	bodyText, _ := content["body"].(string)
+	if !strings.Contains(bodyText, "Issue: **Pump down**") || !strings.Contains(bodyText, "Status: **In Progress**") {
+		t.Errorf("body = %q", bodyText)
+	}
+	if strings.Contains(bodyText, "#42") {
+		t.Errorf("body should not include issue ID: %q", bodyText)
+	}
+	metadata, ok := body["metadata"].(map[string]any)
+	if !ok || metadata["event"] != "state_change" {
+		t.Errorf("metadata = %#v", body["metadata"])
+	}
+}
+
+func TestNotifyIssueStateChange_IncludesRejectReason(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"ntf_r","status":"queued","plan":[]}`))
+	}))
+	defer srv.Close()
+
+	h := &UIHandler{config: Config{CommsURL: srv.URL, CommsAPIKey: "test-key"}, logger: slog.Default()}
+	issue := Issue{ID: 5, Title: "Broken pump", NotifyState: true, NotifyEmail: "ops@example.com"}
+	h.notifyIssueStateChange(context.Background(), notifyTestTranslator, issue, "rejected", 7, int64(0), "Not reproducible")
+
+	content, _ := body["content"].(map[string]any)
+	bodyText, _ := content["body"].(string)
+	if !strings.Contains(bodyText, "Not reproducible") || !strings.Contains(bodyText, "Reason") {
+		t.Errorf("body missing reject reason: %q", bodyText)
+	}
+}
+
+func TestNotifyIssueStateChange_IncludesTrackingURL(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Location", "/v1/notifications/ntf_2")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"ntf_2","status":"queued","plan":[]}`))
+	}))
+	defer srv.Close()
+
+	h := &UIHandler{
+		config: Config{CommsURL: srv.URL, CommsAPIKey: "test-key", QRBaseURL: "http://localhost:8080"},
+		logger: slog.Default(),
+	}
+	issue := Issue{ID: 42, Title: "Pump down", AssetName: "Pump A", NotifyState: true, NotifyEmail: "ops@example.com", TrackToken: "TRACKTOKEN123"}
+	h.notifyIssueStateChange(context.Background(), notifyTestTranslator, issue, "in_progress", 7)
+
+	content, ok := body["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("content shape: %#v", body["content"])
+	}
+	bodyText, _ := content["body"].(string)
+	wantURL := "http://localhost:8080/track/TRACKTOKEN123"
+	if !strings.Contains(bodyText, wantURL) || !strings.Contains(bodyText, "Asset: **Pump A**") {
+		t.Errorf("body missing tracking url/asset: %q", bodyText)
+	}
+}
+
+func TestNotifyIssueCreated_SendsEmailRequest(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Location", "/v1/notifications/ntf_3")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"ntf_3","status":"queued","plan":[]}`))
+	}))
+	defer srv.Close()
+
+	h := &UIHandler{
+		config: Config{CommsURL: srv.URL, CommsAPIKey: "test-key", QRBaseURL: "http://localhost:8080"},
+		logger: slog.Default(),
+	}
+	issue := Issue{ID: 99, Title: "New pump", State: "reported", NotifyState: true, NotifyEmail: "ops@example.com", TrackToken: "TRACKTOKEN999", ReportedBy: 5}
+	h.notifyIssueCreated(context.Background(), notifyTestTranslator, issue)
+
+	content, ok := body["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("content shape: %#v", body["content"])
+	}
+	if subject, _ := content["subject"].(string); subject != "Issue \"New pump\": Reported" {
+		t.Errorf("subject = %q", subject)
+	}
+	bodyText, _ := content["body"].(string)
+	if !strings.Contains(bodyText, "http://localhost:8080/track/TRACKTOKEN999") || !strings.Contains(bodyText, "Issue: **New pump**") {
+		t.Errorf("body missing expected content: %q", bodyText)
+	}
+	if strings.Contains(bodyText, "#99") {
+		t.Errorf("body should not include issue ID: %q", bodyText)
+	}
+	metadata, ok := body["metadata"].(map[string]any)
+	if !ok || metadata["event"] != "created" {
+		t.Errorf("metadata = %#v", body["metadata"])
 	}
 }
 

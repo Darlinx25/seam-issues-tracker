@@ -865,6 +865,13 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	trackToken, err := newIssueTrackingToken()
+	if err != nil {
+		h.logger.Error("failed to generate issue tracking token", "error", err)
+		http.Error(w, "Failed to save issue", http.StatusInternalServerError)
+		return
+	}
+
 	issueData := map[string]any{
 		"title":        title,
 		"description":  description,
@@ -875,6 +882,7 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		"channel":      "app",
 		"created_at":   now.Format(time.RFC3339),
 		"notify_state": notifyState,
+		"track_token":  trackToken,
 	}
 	if notifyState {
 		issueData["notify_email"] = notifyEmail
@@ -919,6 +927,27 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		h.storeIssuePhotos(ctx, entity.ID, photoUploads, uploadedBy)
 	}
+
+	issue := issueFromEntity(entity)
+	if issue.TrackToken == "" {
+		issue.TrackToken = trackToken
+	}
+	if !issue.NotifyState && notifyState {
+		issue.NotifyState = true
+		issue.NotifyEmail = notifyEmail
+	}
+	if issue.State == "" {
+		issue.State = machine.State
+	}
+	if issue.Title == "" {
+		issue.Title = title
+	}
+	if issue.AssetName == "" && assetID > 0 {
+		if asset, err := h.xoluClient.Get(ctx, "assets", assetID); err == nil {
+			issue.AssetName = toString(asset.Data["name"])
+		}
+	}
+	h.notifyIssueCreated(ctx, t, issue)
 
 	http.Redirect(w, r, "/issues/"+strconv.FormatInt(entity.ID, 10), http.StatusSeeOther)
 }
@@ -1153,6 +1182,11 @@ func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if input == "merge" && payload != nil {
 		canonicalID = toInt64(payload["canonical_id"])
 	}
+	if issue.AssetName == "" && issue.AssetID > 0 {
+		if asset, err := h.xoluClient.Get(ctx, "assets", issue.AssetID); err == nil {
+			issue.AssetName = toString(asset.Data["name"])
+		}
+	}
 	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID, canonicalID)
 
 	// The case is the single management point: the same input is replayed
@@ -1263,7 +1297,13 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("issue rejected but patch failed", "id", id, "error", err)
 	}
 
-	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID)
+	if issue.AssetName == "" && issue.AssetID > 0 {
+		if asset, err := h.xoluClient.Get(ctx, "assets", issue.AssetID); err == nil {
+			issue.AssetName = toString(asset.Data["name"])
+		}
+	}
+	issue.RejectReason = motivo
+	h.notifyIssueStateChange(ctx, t, issue, result.Current, actorID, int64(0), motivo)
 
 	// Rejecting a case rejects the whole group: the reason travels with it.
 	if issue.MasterID == 0 {

@@ -294,12 +294,13 @@ func formatIssueTrackTime(s string) string {
 
 // IssueTrackData is everything the public tracking page renders.
 type IssueTrackData struct {
-	Issue        Issue
-	AssetName    string
-	IsNew        bool
-	TrackingURL  string
-	Activity     []IssueTrackActivity
-	DuplicateURL string
+	Issue            Issue
+	AssetName        string
+	IsNew            bool
+	ShowSaveLinkHint bool
+	TrackingURL      string
+	Activity         []IssueTrackActivity
+	DuplicateURL     string
 	// In the "notice" mode the child keeps its own page and explains that it
 	// belongs to a case. The case may have no public token of its own, in
 	// which case the notice has no link.
@@ -400,14 +401,15 @@ func (h *UIHandler) IssueTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := IssueTrackData{
-		Issue:        issue,
-		IsNew:        r.URL.Query().Get("new") == "1",
-		TrackingURL:  h.issueTrackingLink(token),
-		PartOfCase:   partOfCase,
-		CaseURL:      caseURL,
-		IsCase:       isCase,
-		ChildID:      childID,
-		CaseChildren: caseChildren,
+		Issue:            issue,
+		IsNew:            r.URL.Query().Get("new") == "1",
+		ShowSaveLinkHint: r.URL.Query().Get("new") == "1" && issue.ReportedBy == 0 && !issue.NotifyState,
+		TrackingURL:      h.issueTrackingLink(token),
+		PartOfCase:       partOfCase,
+		CaseURL:          caseURL,
+		IsCase:           isCase,
+		ChildID:          childID,
+		CaseChildren:     caseChildren,
 	}
 
 	if issue.AssetID > 0 {
@@ -479,17 +481,20 @@ func issueTrackPage(data IssueTrackData, t func(key string, args ...any) string)
 		children := []interface{}{}
 
 		if data.IsNew {
+			newChildren := []interface{}{
+				b.Div(mi.Class("text-sm font-semibold text-green-800 dark:text-green-300"),
+					t("qr.track.new_title")),
+				b.Div(mi.Class("text-sm text-green-700 dark:text-green-400"),
+					t("qr.track.issue_number")+": #"+strconv.FormatInt(iss.ID, 10)),
+			}
+			if data.ShowSaveLinkHint {
+				newChildren = append(newChildren, b.P(mi.Class("mt-1 text-xs text-green-700 dark:text-green-400"),
+					t("qr.track.new_hint")))
+			}
 			children = append(children, b.Div(
 				mi.Class("px-4 py-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 flex items-start gap-3"),
 				b.Span(mi.Class("material-icons text-green-600 dark:text-green-400"), "check_circle"),
-				b.Div(mi.Class("min-w-0"),
-					b.Div(mi.Class("text-sm font-semibold text-green-800 dark:text-green-300"),
-						t("qr.track.new_title")),
-					b.Div(mi.Class("text-sm text-green-700 dark:text-green-400"),
-						t("qr.track.issue_number")+": #"+strconv.FormatInt(iss.ID, 10)),
-					b.P(mi.Class("mt-1 text-xs text-green-700 dark:text-green-400"),
-						t("qr.track.new_hint")),
-				),
+				b.Div(append([]interface{}{mi.Class("min-w-0")}, newChildren...)...),
 			))
 		}
 
@@ -607,8 +612,11 @@ func issueTrackPage(data IssueTrackData, t func(key string, args ...any) string)
 		children = append(children, activityCard)
 
 		linkCard := Card(t("qr.track.link.title"), func(b *mi.Builder) mi.Node {
-			return b.Div(
-				b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("qr.track.link.hint")),
+			linkChildren := []interface{}{}
+			if data.ShowSaveLinkHint {
+				linkChildren = append(linkChildren, b.P(mi.Class("text-sm text-gray-500 dark:text-gray-400"), t("qr.track.link.hint")))
+			}
+			linkChildren = append(linkChildren,
 				b.Div(mi.Class("mt-3 flex items-center gap-2"),
 					b.Input(
 						mi.ID("issue-track-link"),
@@ -622,10 +630,13 @@ func issueTrackPage(data IssueTrackData, t func(key string, args ...any) string)
 						mi.ID("issue-track-copy"),
 					)(b),
 				),
-				b.P(mi.Class("mt-3 text-xs text-amber-700 dark:text-amber-400"),
-					t("qr.track.link.warning")),
-				b.Script(mi.Raw(issueTrackCopyScript(t("qr.track.link.copied")))),
 			)
+			if data.ShowSaveLinkHint {
+				linkChildren = append(linkChildren, b.P(mi.Class("mt-3 text-xs text-amber-700 dark:text-amber-400"),
+					t("qr.track.link.warning")))
+			}
+			linkChildren = append(linkChildren, b.Script(mi.Raw(issueTrackCopyScript(t("qr.track.link.copied")))))
+			return b.Div(linkChildren...)
 		})(b)
 		children = append(children, linkCard)
 
