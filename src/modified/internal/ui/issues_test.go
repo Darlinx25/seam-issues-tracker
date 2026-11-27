@@ -3543,6 +3543,15 @@ func TestIssueDetail_QRWithoutAssigneeRejectVisibility(t *testing.T) {
 	if strings.Contains(admin, "/issues/1/start") {
 		t.Error("the start action must stay locked until assignment")
 	}
+	if strings.Contains(admin, "issues.error.start_requires_assignee") {
+		t.Error("the unassigned-report banner must not be repeated in the detail")
+	}
+	if strings.Contains(admin, "sm:ml-auto") {
+		t.Error("the assign and reject actions must share one aligned action bar")
+	}
+	if assign, reject := strings.Index(admin, "/issues/1/assign"), strings.Index(admin, "/issues/1/reject"); assign < 0 || reject < 0 || assign > reject {
+		t.Errorf("expected assign and reject together in that order, got indexes %d and %d", assign, reject)
+	}
 	operator := getIssueDetailAs(t, h.IssueDetail, "1", "operator", 7).Body.String()
 	if strings.Contains(operator, "/issues/1/reject") {
 		t.Error("a regular user must not reject a report owned by nobody")
@@ -3666,7 +3675,7 @@ func TestIssueTemplateDetailPage_SLAIsReadableAndTranslated(t *testing.T) {
 		t.Fatalf("render template detail: %v", err)
 	}
 	body := buf.String()
-	for _, want := range []string{"2 horas", "1 día", "<thead", "issues.templates.sla_default_short"} {
+	for _, want := range []string{"2 horas", "1 día", "8 horas", "3 días", "<thead", "issues.templates.sla_default_short"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected the SLA table to contain %q", want)
 		}

@@ -1855,10 +1855,6 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					))
 				}
 			}
-			if !canStartIssue(iss) && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
-				actionBar = append(actionBar, b.Div(mi.Class("text-sm text-amber-600 dark:text-amber-400"),
-					t("issues.error.start_requires_assignee")))
-			}
 			if data.CanAssign {
 				actionBar = append(actionBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/assign", iss.ID)),
 					mi.Class(issueActionClass(issueActionSecondary)),
@@ -1866,11 +1862,8 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					b.Span(t("issues.action.assign")),
 				))
 			}
-			dangerBar := []interface{}{
-				mi.Class("flex flex-wrap items-center gap-2 sm:ml-auto"),
-			}
 			if data.CanUngroup {
-				dangerBar = append(dangerBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/ungroup", iss.ID)),
+				actionBar = append(actionBar, b.Form(mi.Method("post"), mi.Action(fmt.Sprintf("/issues/%d/ungroup", iss.ID)),
 					b.Input(mi.Type("hidden"), mi.Name("_csrf"), mi.Value(data.CSRFToken)),
 					b.Button(mi.Type("submit"), mi.Class(issueActionClass(issueActionNeutral)),
 						b.Span(mi.Class("material-icons text-base"), "link_off"),
@@ -1879,7 +1872,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				))
 			}
 			if data.CanReject && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
-				dangerBar = append(dangerBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
+				actionBar = append(actionBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
 					mi.Class(issueActionClass(issueActionDanger)),
 					b.Span(mi.Class("material-icons text-base"), "block"),
 					b.Span(t("issues.action.reject")),
@@ -1887,14 +1880,11 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 			}
 			if data.CanAct && len(data.Children) == 0 &&
 				(iss.State == "reported" || iss.State == "triaged" || iss.State == "in_progress") {
-				dangerBar = append(dangerBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/merge", iss.ID)),
+				actionBar = append(actionBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/merge", iss.ID)),
 					mi.Class(issueActionClass(issueActionDanger)),
 					b.Span(mi.Class("material-icons text-base"), "merge_type"),
 					b.Span(t("issues.action.merge")),
 				))
-			}
-			if len(dangerBar) > 1 {
-				actionBar = append(actionBar, b.Div(dangerBar...))
 			}
 			if len(actionBar) > 1 {
 				children = append(children, b.Div(actionBar...))

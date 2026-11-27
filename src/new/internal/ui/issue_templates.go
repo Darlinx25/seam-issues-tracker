@@ -1230,9 +1230,9 @@ func IssueTemplateDetailPage(data IssueTemplateDetailData, t func(key string, ar
 						),
 						b.Tbody(
 							func() []interface{} {
-								slaDetailCell := func(minutes int64) mi.Node {
+								slaDetailCell := func(minutes, defaultMinutes int64) mi.Node {
 									if minutes <= 0 {
-										return b.Span(mi.Class("inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400"), t("issues.templates.sla_default_short"))
+										return b.Span(mi.Class("inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400"), t("issues.templates.sla_default_short")+" · "+slaMinutesToReadable(t, defaultMinutes))
 									}
 									return b.Span(mi.Class("inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"), slaMinutesToReadable(t, minutes))
 								}
@@ -1254,8 +1254,8 @@ func IssueTemplateDetailPage(data IssueTemplateDetailData, t func(key string, ar
 									}
 									rows = append(rows, b.Tr(mi.Class("border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
 										b.Td(mi.Class("px-4 py-2 font-medium text-gray-900 dark:text-white"), label[p]),
-										b.Td(mi.Class("px-4 py-2"), slaDetailCell(fr)),
-										b.Td(mi.Class("px-4 py-2"), slaDetailCell(rs)),
+										b.Td(mi.Class("px-4 py-2"), slaDetailCell(fr, defaultSLAFirstResponseMinutes(p, "normal"))),
+										b.Td(mi.Class("px-4 py-2"), slaDetailCell(rs, defaultSLAResolutionMinutes(p, "normal"))),
 									))
 								}
 								return rows
