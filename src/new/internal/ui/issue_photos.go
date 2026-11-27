@@ -19,12 +19,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
 
+	heic "github.com/gen2brain/h265/heic"
 	mi "github.com/ha1tch/minty"
 )
 
@@ -35,6 +38,8 @@ const (
 	maxIssuePhotoBytes     = 20 << 20
 	maxIssuePhotosPerField = 10
 	issuePhotoMemoryLimit  = 32 << 20
+	maxIssuePhotoPixels    = 80_000_000
+	issuePhotoJPEGQuality  = 88
 )
 
 // issuePhotoFieldName is the multipart field carrying the files of one
@@ -101,13 +106,107 @@ func isHEICImage(head []byte) bool {
 	return false
 }
 
+// preparedIssuePhoto is one accepted upload. Data is nil for formats that can
+// be uploaded as received; for HEIC/HEIF it holds the JPEG bytes produced
+// before the issue is created, so every byte stored later matches the exact
+// validation and metadata written here.
+type preparedIssuePhoto struct {
+	Header      *multipart.FileHeader
+	Data        []byte
+	ContentType string
+	Filename    string
+}
+
+// convertHEICToJPEG turns the format phones produce into the JPEG the gallery
+// and every browser can display. The decoder is pure Go; AutoRotate applies
+// the HEIF rotation/mirror boxes, and an EXIF orientation is applied as well
+// when the file carries one.
+func convertHEICToJPEG(data []byte) ([]byte, error) {
+	cfg, err := heic.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxIssuePhotoPixels {
+		return nil, fmt.Errorf("heic image too large: %dx%d", cfg.Width, cfg.Height)
+	}
+	img, err := heic.Decode(bytes.NewReader(data), heic.Options{
+		AutoRotate:     true,
+		FrameSizeLimit: maxIssuePhotoPixels,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if exif, exifErr := heic.DecodeExif(bytes.NewReader(data)); exifErr == nil && exif != nil {
+		img = orientIssueImage(img, exif.Orientation)
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: issuePhotoJPEGQuality}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// orientIssueImage applies the EXIF orientation values 2-8. HEIF containers
+// usually carry irot/imir boxes (handled by AutoRotate), but a camera can
+// still write the legacy tag and the JPEG would otherwise come out sideways.
+func orientIssueImage(src image.Image, orientation int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if orientation < 1 || orientation > 8 {
+		return src
+	}
+	dw, dh := w, h
+	if orientation >= 5 {
+		dw, dh = h, w
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	for y := 0; y < dh; y++ {
+		for x := 0; x < dw; x++ {
+			var sx, sy int
+			switch orientation {
+			case 1:
+				sx, sy = x, y
+			case 2:
+				sx, sy = w-1-x, y
+			case 3:
+				sx, sy = w-1-x, h-1-y
+			case 4:
+				sx, sy = x, h-1-y
+			case 5:
+				sx, sy = y, x
+			case 6:
+				sx, sy = h-1-y, x
+			case 7:
+				sx, sy = w-1-y, h-1-x
+			case 8:
+				sx, sy = y, w-1-x
+			}
+			dst.Set(x, y, src.At(b.Min.X+sx, b.Min.Y+sy))
+		}
+	}
+	return dst
+}
+
+// jpegIssuePhotoName keeps a useful file name when the original was HEIC; the
+// blob key is content-addressed, but logs and metadata still show an .jpg.
+func jpegIssuePhotoName(name string) string {
+	base := name
+	if i := strings.LastIndex(base, "."); i > 0 {
+		base = base[:i]
+	}
+	if base == "" {
+		base = "photo"
+	}
+	return base + ".jpg"
+}
+
 // prepareIssuePhotos validates the photo fields of a report before the issue
 // is created: required fields must carry at least one file, the per-field
 // count is bounded, and every file must be a real image within the size
-// limit. Files are not read into memory here -- only the first block needed
-// for DetectContentType is read.
-func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t func(key string, args ...any) string) (map[string][]*multipart.FileHeader, map[string]string) {
-	files := map[string][]*multipart.FileHeader{}
+// limit. HEIC/HEIF files are converted here so a bad file cannot create an
+// issue whose photo silently disappears afterwards.
+func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t func(key string, args ...any) string) (map[string][]preparedIssuePhoto, map[string]string) {
+	files := map[string][]preparedIssuePhoto{}
 	errors := map[string]string{}
 	if tpl == nil || r.MultipartForm == nil {
 		for _, f := range issuePhotoFields(tpl) {
@@ -132,6 +231,7 @@ func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t fu
 			continue
 		}
 		valid := true
+		accepted := make([]preparedIssuePhoto, 0, len(headers))
 		for _, header := range headers {
 			if header.Size > maxIssuePhotoBytes {
 				errors[f.Key] = t("issues.photos.error.too_large")
@@ -146,20 +246,39 @@ func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t fu
 			}
 			head := make([]byte, 512)
 			n, _ := io.ReadFull(file, head)
-			_ = file.Close()
 			if isHEICImage(head[:n]) {
-				errors[f.Key] = t("issues.photos.error.heic_unsupported")
-				valid = false
-				break
+				rest, readErr := io.ReadAll(io.LimitReader(file, int64(maxIssuePhotoBytes-len(head)+1)))
+				_ = file.Close()
+				data := append(append([]byte{}, head[:n]...), rest...)
+				if readErr != nil || len(data) > maxIssuePhotoBytes || len(data) == 0 {
+					errors[f.Key] = t("issues.photos.error.too_large")
+					valid = false
+					break
+				}
+				jpg, convertErr := convertHEICToJPEG(data)
+				if convertErr != nil || len(jpg) == 0 || len(jpg) > maxIssuePhotoBytes {
+					errors[f.Key] = t("issues.photos.error.heic_conversion_failed")
+					valid = false
+					break
+				}
+				accepted = append(accepted, preparedIssuePhoto{
+					Header:      header,
+					Data:        jpg,
+					ContentType: http.DetectContentType(jpg),
+					Filename:    jpegIssuePhotoName(header.Filename),
+				})
+				continue
 			}
+			_ = file.Close()
 			if !allowedIssuePhotoType(http.DetectContentType(head[:n])) {
 				errors[f.Key] = t("issues.photos.error.invalid_type")
 				valid = false
 				break
 			}
+			accepted = append(accepted, preparedIssuePhoto{Header: header, Filename: header.Filename})
 		}
 		if valid {
-			files[f.Key] = headers
+			files[f.Key] = accepted
 		}
 	}
 	return files, errors
@@ -169,27 +288,37 @@ func (h *UIHandler) prepareIssuePhotos(r *http.Request, tpl *IssueTemplate, t fu
 // metadata row. A failed file is logged and skipped: the issue already exists
 // at this point, so losing the report over a storage hiccup would be worse
 // than storing the remaining photos.
-func (h *UIHandler) storeIssuePhotos(ctx context.Context, issueID int64, files map[string][]*multipart.FileHeader, uploadedBy string) map[string][]mediaItem {
+func (h *UIHandler) storeIssuePhotos(ctx context.Context, issueID int64, files map[string][]preparedIssuePhoto, uploadedBy string) map[string][]mediaItem {
 	stored := map[string][]mediaItem{}
 	if issueID <= 0 {
 		return stored
 	}
-	for field, headers := range files {
+	for field, photos := range files {
 		position := h.nextIssuePhotoPosition(ctx, issueID, field)
-		for _, header := range headers {
-			file, err := header.Open()
-			if err != nil {
-				h.logger.Error("issue photo open failed", "error", err, "issue_id", issueID, "field", field)
-				continue
+		for _, photo := range photos {
+			data := photo.Data
+			if data == nil {
+				file, err := photo.Header.Open()
+				if err != nil {
+					h.logger.Error("issue photo open failed", "error", err, "issue_id", issueID, "field", field)
+					continue
+				}
+				data, err = io.ReadAll(io.LimitReader(file, maxIssuePhotoBytes+1))
+				_ = file.Close()
+				if err != nil || len(data) == 0 || len(data) > maxIssuePhotoBytes {
+					h.logger.Error("issue photo read failed", "error", err, "issue_id", issueID, "field", field)
+					continue
+				}
 			}
-			data, err := io.ReadAll(io.LimitReader(file, maxIssuePhotoBytes+1))
-			_ = file.Close()
-			if err != nil || len(data) == 0 || len(data) > maxIssuePhotoBytes {
-				h.logger.Error("issue photo read failed", "error", err, "issue_id", issueID, "field", field)
+			if len(data) == 0 || len(data) > maxIssuePhotoBytes {
+				h.logger.Error("issue photo bytes rejected", "issue_id", issueID, "field", field)
 				continue
 			}
 
-			contentType := http.DetectContentType(data)
+			contentType := photo.ContentType
+			if contentType == "" {
+				contentType = http.DetectContentType(data)
+			}
 			if !allowedIssuePhotoType(contentType) {
 				h.logger.Error("issue photo content type rejected", "issue_id", issueID, "field", field, "content_type", contentType)
 				continue

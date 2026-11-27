@@ -162,6 +162,30 @@ func (h *UIHandler) canActOnIssue(r *http.Request, issue Issue) bool {
 	return auth.RoleRank(u.Role) >= auth.RoleRank(auth.RoleAdmin)
 }
 
+// canRejectIssue gates rejection separately from the rest of the lifecycle.
+// An anonymous QR report has no responsible yet, but an admin still needs to
+// discard spam without creating an owner just to be able to reject it.
+func (h *UIHandler) canRejectIssue(r *http.Request, issue Issue) bool {
+	if issue.MasterID > 0 {
+		return false
+	}
+	switch issue.State {
+	case "closed", "rejected", "duplicate":
+		return false
+	}
+	u := h.getCurrentUser(r)
+	if u == nil || u.ID == 0 {
+		return false
+	}
+	if issue.Channel == "qr" && issue.Assignee <= 0 {
+		return auth.RoleRank(u.Role) >= auth.RoleRank(auth.RoleAdmin)
+	}
+	if issue.Assignee <= 0 || issue.Assignee == u.ID {
+		return true
+	}
+	return auth.RoleRank(u.Role) >= auth.RoleRank(auth.RoleAdmin)
+}
+
 // canStartIssue gates the lifecycle start. An anonymous QR report has no
 // accountable user yet: an admin must assign a responsible before anyone may
 // start it, otherwise the work would begin unowned.
@@ -951,6 +975,7 @@ func (h *UIHandler) IssueDetail(w http.ResponseWriter, r *http.Request) {
 	data.CSRFToken = h.GetCSRFToken(w, r)
 	data.CanAssign = h.canAssignIssue(r, issue)
 	data.CanAct = h.canActOnIssue(r, issue)
+	data.CanReject = h.canRejectIssue(r, issue)
 	data.CanUngroup = issue.MasterID > 0 && h.canManageIssueGroups(r)
 	if issue.TrackToken != "" {
 		data.TrackingURL = h.issueTrackingLink(issue.TrackToken)
@@ -1102,7 +1127,7 @@ func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, inpu
 	if err != nil {
 		h.logger.Info("issue walk rejected", "id", id, "input", input, "error", err)
 		csrfToken := h.GetCSRFToken(w, r)
-		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
+		data := IssueDetailData{Issue: issue, CSRFToken: csrfToken, WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), CanReject: h.canRejectIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -1141,7 +1166,8 @@ func (h *UIHandler) issueTransition(w http.ResponseWriter, r *http.Request, inpu
 
 // IssueRejectFormPage handles GET /issues/{id}/reject -- renders the
 // reject form. A reason is mandatory; enforced server-side on submit.
-// Rejecting belongs to the responsible, so anyone else gets a 403.
+// Rejecting belongs to the responsible, or to an admin before an anonymous
+// QR report has one, so anyone else gets a 403.
 func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) {
 	t := h.translateFunc(r)
 	ctx := r.Context()
@@ -1156,8 +1182,8 @@ func (h *UIHandler) IssueRejectFormPage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	issue := issueFromEntity(entity)
-	if !h.canActOnIssue(r, issue) {
-		h.logger.Info("issue reject form refused: not the responsible", "id", id, "assignee", issue.Assignee)
+	if !h.canRejectIssue(r, issue) {
+		h.logger.Info("issue reject form refused: not allowed", "id", id, "assignee", issue.Assignee)
 		h.Error403(w, r)
 		return
 	}
@@ -1190,10 +1216,10 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	}
 	issue := issueFromEntity(entity)
 
-	// Rejecting is a lifecycle action: it belongs to the responsible, like
-	// start and resolve (see canActOnIssue).
-	if !h.canActOnIssue(r, issue) {
-		h.logger.Info("issue reject refused: not the responsible", "id", id, "assignee", issue.Assignee)
+	// Rejecting belongs to the responsible, or to an admin while an
+	// anonymous QR report has no responsible yet (see canRejectIssue).
+	if !h.canRejectIssue(r, issue) {
+		h.logger.Info("issue reject refused: not allowed", "id", id, "assignee", issue.Assignee)
 		h.Error403(w, r)
 		return
 	}
@@ -1217,7 +1243,7 @@ func (h *UIHandler) IssueReject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.logger.Info("issue reject walk failed", "id", id, "error", err)
-		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
+		data := IssueDetailData{Issue: issue, CSRFToken: h.GetCSRFToken(w, r), WalkError: err.Error(), CanAssign: h.canAssignIssue(r, issue), CanAct: h.canActOnIssue(r, issue), CanReject: h.canRejectIssue(r, issue), QRAnonymous: issue.Channel == "qr", QRContact: issueQRContactFromFormData(issue.FormData)}
 		h.page.Render(w, r, t("issues.detail_title"), "/issues", IssueDetailPage(data, t))
 		return
 	}
@@ -1593,11 +1619,14 @@ type IssueDetailData struct {
 	CanAssign bool
 
 	// CanAct tells the page whether the current user may run the lifecycle
-	// actions (start, resolve, close, reject) on this issue: the
-	// responsible, or an admin. An in-app issue without a responsible can be
-	// acted on by anyone; an anonymous QR report stays locked until an admin
-	// assigns someone, and a child issue never (see canActOnIssue).
+	// actions other than rejection on this issue: the responsible, or an
+	// admin. An anonymous QR report stays locked until an admin assigns
+	// someone, and a child issue never (see canActOnIssue).
 	CanAct bool
+
+	// CanReject is separate: an admin may discard an anonymous QR report
+	// before assigning anyone, while the other lifecycle actions stay locked.
+	CanReject bool
 
 	// CanUngroup tells the page whether to offer detaching this child from
 	// its case: admins only, and only while it is actually a child.
@@ -1705,9 +1734,15 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 				addContactRow(t("qr.report.contact_document"), data.QRContact.Document)
 				addContactRow(t("qr.report.contact_phone"), data.QRContact.Phone)
 				addContactRow(t("qr.report.contact_email"), data.QRContact.Email)
-				children = append(children, Card(t("qr.report.contact_title"), func(b *mi.Builder) mi.Node {
-					return b.Div(append([]interface{}{mi.Class("space-y-1")}, contactRows...)...)
-				})(b))
+				children = append(children, b.Details(
+					mi.Class("mt-4 rounded-lg border border-gray-200 dark:border-gray-700"),
+					b.Summary(
+						mi.Class("flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200"),
+						b.Span(t("issues.detail.reporter_contact_title")),
+						b.Span(mi.Class("material-icons text-base text-gray-400"), "expand_more"),
+					),
+					b.Div(append([]interface{}{mi.Class("space-y-1 border-t border-gray-200 px-3 py-3 dark:border-gray-700")}, contactRows...)...),
+				))
 			}
 			assigneeLabel := iss.AssigneeName
 			if assigneeLabel == "" {
@@ -1843,7 +1878,7 @@ func IssueDetailPage(data IssueDetailData, t func(key string, args ...any) strin
 					),
 				))
 			}
-			if data.CanAct && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
+			if data.CanReject && iss.State != "closed" && iss.State != "rejected" && iss.State != "duplicate" {
 				dangerBar = append(dangerBar, b.A(mi.Href(fmt.Sprintf("/issues/%d/reject", iss.ID)),
 					mi.Class(issueActionClass(issueActionDanger)),
 					b.Span(mi.Class("material-icons text-base"), "block"),

@@ -167,36 +167,31 @@ func slaMinutesFromValueUnit(value int64, unit string) int64 {
 	}
 }
 
-// slaMinutesToReadable formats minutes to a readable string.
-func slaMinutesToReadable(m int64) string {
+// slaMinutesToReadable formats stored minutes with the same translated units
+// the template form uses, so the detail page never falls back to English.
+func slaMinutesToReadable(t func(key string, args ...any) string, m int64) string {
+	if t == nil {
+		t = func(key string, args ...any) string { return key }
+	}
 	if m <= 0 {
 		return ""
 	}
-	if m%10080 == 0 && m != 0 {
-		w := m / 10080
-		if w == 1 {
-			return "1 week"
-		}
-		return fmt.Sprintf("%d weeks", w)
+	var n int64
+	var unit string
+	switch {
+	case m%10080 == 0:
+		n, unit = m/10080, "week"
+	case m%1440 == 0:
+		n, unit = m/1440, "day"
+	case m%60 == 0:
+		n, unit = m/60, "hour"
+	default:
+		n, unit = m, "minute"
 	}
-	if m%1440 == 0 {
-		d := m / 1440
-		if d == 1 {
-			return "1 day"
-		}
-		return fmt.Sprintf("%d days", d)
+	if n != 1 {
+		unit += "s"
 	}
-	if m%60 == 0 {
-		h := m / 60
-		if h == 1 {
-			return "1 h"
-		}
-		return fmt.Sprintf("%d h", h)
-	}
-	if m == 1 {
-		return "1 min"
-	}
-	return fmt.Sprintf("%d min", m)
+	return fmt.Sprintf("%d %s", n, t("issues.templates.unit."+unit))
 }
 
 // slaMinutesToValueUnit is the inverse of slaMinutesFromValueUnit: it picks
@@ -1220,47 +1215,53 @@ func IssueTemplateDetailPage(data IssueTemplateDetailData, t func(key string, ar
 				return b.Div(mi.Class("text-sm text-gray-700 dark:text-gray-300"), data.Description)
 			}(),
 			b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"),
-				b.H2(mi.Class("text-lg font-semibold text-gray-900 dark:text-white px-4 py-3 border-b border-gray-100 dark:border-gray-700"), t("issues.sla.title")),
-				b.Div(
-					func() []interface{} {
-						priorities := []string{"critical", "high", "medium", "low"}
-						rows := []interface{}{}
-						for _, p := range priorities {
-							label := map[string]string{"critical": t("issues.priority.critical"), "high": t("issues.priority.high"), "medium": t("issues.priority.medium"), "low": t("issues.priority.low")}
-							if label[p] == "" || strings.Contains(label[p], ".") {
-								label[p] = p
-							}
-							fr := int64(0)
-							rs := int64(0)
-							if data.SLAConfig != nil {
-								if m, ok := data.SLAConfig["first_response"]; ok {
-									fr = m[p]
+				b.Div(mi.Class("px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-baseline justify-between gap-2"),
+					b.H2(mi.Class("text-lg font-semibold text-gray-900 dark:text-white"), t("issues.sla.title")),
+					b.P(mi.Class("text-xs text-gray-500 dark:text-gray-400"), t("issues.templates.sla_detail_hint")),
+				),
+				b.Div(mi.Class("overflow-x-auto"),
+					b.Table(mi.Class("w-full text-sm"),
+						b.Thead(
+							b.Tr(mi.Class("border-b border-gray-200 dark:border-gray-700"),
+								b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.sla.priority")),
+								b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.sla.first_response")),
+								b.Th(mi.Class("px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400"), t("issues.sla.resolution")),
+							),
+						),
+						b.Tbody(
+							func() []interface{} {
+								slaDetailCell := func(minutes int64) mi.Node {
+									if minutes <= 0 {
+										return b.Span(mi.Class("inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400"), t("issues.templates.sla_default_short"))
+									}
+									return b.Span(mi.Class("inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"), slaMinutesToReadable(t, minutes))
 								}
-								if m, ok := data.SLAConfig["resolution"]; ok {
-									rs = m[p]
+								rows := []interface{}{}
+								for _, p := range slaPriorities {
+									label := map[string]string{"critical": t("issues.priority.critical"), "high": t("issues.priority.high"), "medium": t("issues.priority.medium"), "low": t("issues.priority.low")}
+									if label[p] == "" || strings.Contains(label[p], ".") {
+										label[p] = p
+									}
+									fr := int64(0)
+									rs := int64(0)
+									if data.SLAConfig != nil {
+										if m, ok := data.SLAConfig["first_response"]; ok {
+											fr = m[p]
+										}
+										if m, ok := data.SLAConfig["resolution"]; ok {
+											rs = m[p]
+										}
+									}
+									rows = append(rows, b.Tr(mi.Class("border-b border-gray-100 dark:border-gray-700 last:border-b-0"),
+										b.Td(mi.Class("px-4 py-2 font-medium text-gray-900 dark:text-white"), label[p]),
+										b.Td(mi.Class("px-4 py-2"), slaDetailCell(fr)),
+										b.Td(mi.Class("px-4 py-2"), slaDetailCell(rs)),
+									))
 								}
-							}
-							frs := t("issues.templates.sla_use_defaults")
-							if fr > 0 {
-								frs = slaMinutesToReadable(fr)
-							}
-							rss := t("issues.templates.sla_use_defaults")
-							if rs > 0 {
-								rss = slaMinutesToReadable(rs)
-							}
-							rows = append(rows, b.Div(mi.Class("px-4 py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0 flex items-center justify-between text-sm"),
-								b.Div(mi.Class("text-gray-900 dark:text-white font-medium"), label[p]),
-								b.Div(mi.Class("flex items-center gap-4 text-gray-600 dark:text-gray-300"),
-									b.Span(t("issues.sla.first_response")+": "+frs),
-									b.Span(t("issues.sla.resolution")+": "+rss),
-								),
-							))
-						}
-						if len(rows) == 0 {
-							rows = append(rows, b.P(mi.Class("px-4 py-2 text-sm text-gray-500"), t("issues.templates.sla_use_defaults")))
-						}
-						return rows
-					}()...,
+								return rows
+							}()...,
+						),
+					),
 				),
 			),
 			b.Div(mi.Class("bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"),

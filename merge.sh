@@ -284,6 +284,14 @@ required_keys = (
     "issues.error.start_requires_assignee",
     "issues.templates.assigned_other",
     "issues.photos.error.heic_unsupported",
+    "issues.photos.error.heic_conversion_failed",
+    "issues.detail.reporter_contact_title",
+    "issues.templates.sla_detail_hint",
+    "issues.templates.sla_default_short",
+    "issues.templates.unit.minute",
+    "issues.templates.unit.hour",
+    "issues.templates.unit.day",
+    "issues.templates.unit.week",
 )
 for lang, expected in expected_merge.items():
     locale_path = root / f"internal/i18n/locales/{lang}.json"

@@ -687,6 +687,14 @@ _ISSUE_FORM_KEYS = {
         'issues.sla.estimate.unit.hours': 'hours',
         'issues.sla.estimate.unit.minute': 'minute',
         'issues.sla.estimate.unit.minutes': 'minutes',
+        'issues.detail.reporter_contact_title': 'Reporter details',
+        'issues.photos.error.heic_conversion_failed': 'The HEIC/HEIF photo could not be converted; try another photo',
+        'issues.templates.sla_detail_hint': 'Empty values use the default for priority and asset category',
+        'issues.templates.sla_default_short': 'Default',
+        'issues.templates.unit.minute': 'minute',
+        'issues.templates.unit.hour': 'hour',
+        'issues.templates.unit.day': 'day',
+        'issues.templates.unit.week': 'week',
     },
     'es': {
         'issue.priority.critical': 'Crítica',
@@ -702,6 +710,14 @@ _ISSUE_FORM_KEYS = {
         'issues.sla.estimate.unit.hours': 'horas',
         'issues.sla.estimate.unit.minute': 'minuto',
         'issues.sla.estimate.unit.minutes': 'minutos',
+        'issues.detail.reporter_contact_title': 'Datos del reportante',
+        'issues.photos.error.heic_conversion_failed': 'No se pudo convertir la foto HEIC/HEIF; prueba con otra foto',
+        'issues.templates.sla_detail_hint': 'Los valores vacíos usan el tiempo por defecto según prioridad y categoría del activo',
+        'issues.templates.sla_default_short': 'Por defecto',
+        'issues.templates.unit.minute': 'minuto',
+        'issues.templates.unit.hour': 'hora',
+        'issues.templates.unit.day': 'día',
+        'issues.templates.unit.week': 'semana',
     },
     'pt': {
         'issue.priority.critical': 'Crítica',
@@ -717,6 +733,14 @@ _ISSUE_FORM_KEYS = {
         'issues.sla.estimate.unit.hours': 'horas',
         'issues.sla.estimate.unit.minute': 'minuto',
         'issues.sla.estimate.unit.minutes': 'minutos',
+        'issues.detail.reporter_contact_title': 'Dados do reportante',
+        'issues.photos.error.heic_conversion_failed': 'Não foi possível converter a foto HEIC/HEIF; tente outra',
+        'issues.templates.sla_detail_hint': 'Os valores vazios usam o padrão por prioridade e categoria do ativo',
+        'issues.templates.sla_default_short': 'Padrão',
+        'issues.templates.unit.minute': 'minuto',
+        'issues.templates.unit.hour': 'hora',
+        'issues.templates.unit.day': 'dia',
+        'issues.templates.unit.week': 'semana',
     },
     'ja': {
         'issue.priority.critical': '緊急',
@@ -732,6 +756,33 @@ _ISSUE_FORM_KEYS = {
         'issues.sla.estimate.unit.hours': '時間',
         'issues.sla.estimate.unit.minute': '分',
         'issues.sla.estimate.unit.minutes': '分',
+        'issues.detail.reporter_contact_title': '報告者の詳細',
+        'issues.photos.error.heic_conversion_failed': 'HEIC/HEIF写真を変換できませんでした。別の写真を試してください',
+        'issues.templates.sla_detail_hint': '空欄は優先度と資産カテゴリのデフォルト値を使用します',
+        'issues.templates.sla_default_short': 'デフォルト',
+        'issues.templates.unit.minute': '分',
+        'issues.templates.unit.hour': '時間',
+        'issues.templates.unit.day': '日',
+        'issues.templates.unit.week': '週',
+    },
+}
+
+_ISSUE_FORM_OVERRIDES = {
+    'en': {
+        'issues.photos.hint': 'Up to 10 photos, 20 MB each (JPG, PNG, WebP, GIF or HEIC; HEIC is converted to JPG)',
+        'issues.photos.error.invalid_type': 'Only JPG, PNG, WebP, GIF or HEIC/HEIF images are allowed',
+    },
+    'es': {
+        'issues.photos.hint': 'Hasta 10 fotos de 20 MB cada una (JPG, PNG, WebP, GIF o HEIC; HEIC se convierte a JPG)',
+        'issues.photos.error.invalid_type': 'Solo se permiten imágenes JPG, PNG, WebP, GIF o HEIC/HEIF',
+    },
+    'pt': {
+        'issues.photos.hint': 'Até 10 fotos de 20 MB cada (JPG, PNG, WebP, GIF ou HEIC; HEIC é convertido em JPG)',
+        'issues.photos.error.invalid_type': 'Apenas imagens JPG, PNG, WebP, GIF ou HEIC/HEIF são permitidas',
+    },
+    'ja': {
+        'issues.photos.hint': '最大10枚、各20MBまで（JPG、PNG、WebP、GIF、HEIC。HEICはJPGに変換されます）',
+        'issues.photos.error.invalid_type': 'JPG、PNG、WebP、GIF、HEIC/HEIF画像のみ使用できます',
     },
 }
 
@@ -739,6 +790,8 @@ for _k, _v in _FILTER_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
 for _k, _v in _ISSUE_FORM_KEYS.get(L, {}).items():
     d.setdefault(_k, _v)
+for _k, _v in _ISSUE_FORM_OVERRIDES.get(L, {}).items():
+    d[_k] = _v
 for _k in (
     'issues.sla.estimate.normal',
     'issues.sla.estimate.critical',

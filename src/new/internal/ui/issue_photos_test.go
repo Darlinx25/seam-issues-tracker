@@ -3,15 +3,38 @@ package ui
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+
+	heic "github.com/gen2brain/h265/heic"
 )
 
 const issuePhotoTestPNG = "\x89PNG\r\n\x1a\n" + "seam-photo-test"
+
+func issuePhotoTestHEIC(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 24, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 24; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: uint8(x * 10), G: uint8(y * 15), B: 80, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := heic.Encode(&buf, img, heic.EncodeOptions{Quality: 60}); err != nil {
+		t.Fatalf("encode HEIC fixture: %v", err)
+	}
+	if !isHEICImage(buf.Bytes()) {
+		t.Fatalf("encoded fixture is not detected as HEIC")
+	}
+	return buf.Bytes()
+}
 
 func photoTemplateRow() map[string]any {
 	return map[string]any{
@@ -183,6 +206,61 @@ func TestIssueCreate_WithPhoto_UploadsBlobAndMetadata(t *testing.T) {
 	}
 }
 
+// TestIssueCreate_WithHEIC_StoresJPEG checks the whole path stores the
+// converted bytes, not the original HEIC carrier the browser detected.
+func TestIssueCreate_WithHEIC_StoresJPEG(t *testing.T) {
+	var blobType, metadataType string
+	var blobBytes []byte
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/assets/": mockEntityGet(map[string]any{"id": float64(7), "type_id": float64(3)}),
+		"POST /api/v1/oql":    func(w http.ResponseWriter, r *http.Request) { templateOQL(w, r, issuePhotoResolver) },
+		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
+		},
+		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
+		},
+		"POST /api/v1/blob": func(w http.ResponseWriter, r *http.Request) {
+			blobType = r.Header.Get("Content-Type")
+			blobBytes, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"key": "stored", "sha256": "abc"})
+		},
+		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(42)})
+		},
+		"POST /api/v1/seam_media_items": func(w http.ResponseWriter, r *http.Request) {
+			var row map[string]any
+			json.NewDecoder(r.Body).Decode(&row)
+			metadataType = toString(row["content_type"])
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(77)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := newIssuePhotoUploadRequest(t, map[string]string{
+		"title": "Pump leaking", "asset_id": "7",
+	}, issuePhotoFieldName("photo"), "photo.heic", issuePhotoTestHEIC(t))
+	rec := httptest.NewRecorder()
+	h.IssueCreate(rec, req)
+
+	assertRedirectsTo(t, rec, "/issues/42")
+	if blobType != "image/jpeg" || metadataType != "image/jpeg" {
+		t.Errorf("expected JPEG storage, got blob=%q metadata=%q", blobType, metadataType)
+	}
+	if len(blobBytes) == 0 || http.DetectContentType(blobBytes) != "image/jpeg" {
+		t.Errorf("stored blob is not a JPEG: %d bytes", len(blobBytes))
+	}
+}
+
 // TestPrepareIssuePhotos_RejectsNonImage keeps the allowlist server-side:
 // the accept attribute is a hint, and a renamed text file must not land in
 // the gallery.
@@ -225,9 +303,41 @@ func TestPrepareIssuePhotos_RequiredFieldEmpty(t *testing.T) {
 	}
 }
 
-// TestPrepareIssuePhotos_RejectsHEIC gives iPhone photos a clear answer
-// instead of the generic invalid-type message.
-func TestPrepareIssuePhotos_RejectsHEIC(t *testing.T) {
+// TestPrepareIssuePhotos_ConvertsHEIC accepts the format phones actually
+// send and stores JPEG bytes, so the gallery never gets an octet-stream blob.
+func TestPrepareIssuePhotos_ConvertsHEIC(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	req := newIssuePhotoUploadRequest(t, nil, issuePhotoFieldName("photo"), "photo.heic", issuePhotoTestHEIC(t))
+	if err := parseIssueFormRequest(req); err != nil {
+		t.Fatalf("parse multipart: %v", err)
+	}
+	tpl := &IssueTemplate{Fields: []TemplateField{{Key: "photo", Label: "Photos", Type: "image"}}}
+	files, errs := h.prepareIssuePhotos(req, tpl, h.translateFunc(nil))
+
+	if errs["photo"] != "" {
+		t.Fatalf("expected HEIC to be accepted, got error %q", errs["photo"])
+	}
+	photos := files["photo"]
+	if len(photos) != 1 {
+		t.Fatalf("expected one accepted photo, got %d", len(photos))
+	}
+	if len(photos[0].Data) == 0 {
+		t.Fatal("expected converted JPEG bytes")
+	}
+	if got := http.DetectContentType(photos[0].Data); got != "image/jpeg" {
+		t.Errorf("expected converted bytes to sniff as image/jpeg, got %q", got)
+	}
+	if photos[0].Filename != "photo.jpg" {
+		t.Errorf("expected a .jpg name, got %q", photos[0].Filename)
+	}
+}
+
+// TestPrepareIssuePhotos_InvalidHEIC reports a conversion failure before the
+// issue is created: a truncated carrier must not become a missing photo.
+func TestPrepareIssuePhotos_InvalidHEIC(t *testing.T) {
 	server := mockOLU(t, map[string]http.HandlerFunc{})
 	defer server.Close()
 	h := newHandler(t, server)
@@ -243,8 +353,8 @@ func TestPrepareIssuePhotos_RejectsHEIC(t *testing.T) {
 	if len(files) != 0 {
 		t.Errorf("expected no accepted files, got %d", len(files))
 	}
-	if errs["photo"] != "issues.photos.error.heic_unsupported" {
-		t.Errorf("expected the HEIC error, got %q", errs["photo"])
+	if errs["photo"] != "issues.photos.error.heic_conversion_failed" {
+		t.Errorf("expected the HEIC conversion error, got %q", errs["photo"])
 	}
 }
 

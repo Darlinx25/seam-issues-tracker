@@ -3481,6 +3481,74 @@ func TestIssueStart_QRWithoutAssigneeRefused(t *testing.T) {
 	}
 }
 
+// TestIssueReject_QRWithoutAssigneeAdminAllowed lets an admin discard an
+// anonymous report directly: assigning an owner just to reject it was the
+// only way to clear spam. Start stays locked (see the test above).
+func TestIssueReject_QRWithoutAssigneeAdminAllowed(t *testing.T) {
+	walked := false
+	var patched map[string]any
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Spam", "state": "reported",
+				"channel": "qr", "machine_id": float64(1),
+			})
+		},
+		"POST /api/v2/fsm/machine/1/walk": func(w http.ResponseWriter, r *http.Request) {
+			walked = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"previous": "reported", "current": "rejected", "terminal": true})
+		},
+		"PATCH /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&patched)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": float64(1)})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	rec := postIssueFormAs(t, h.IssueReject, "1", "/issues/1/reject", url.Values{"motivo": {"spam"}}, "admin", 42)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect after rejecting, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !walked {
+		t.Error("the FSM must be walked to rejected")
+	}
+	if patched["state"] != "rejected" || patched["reject_reason"] != "spam" {
+		t.Errorf("expected rejected state and reason, got %v", patched)
+	}
+}
+
+// TestIssueDetail_QRWithoutAssigneeRejectVisibility offers the reject action
+// to an admin but not to a regular operator, matching who may assign it.
+func TestIssueDetail_QRWithoutAssigneeRejectVisibility(t *testing.T) {
+	server := mockOLU(t, map[string]http.HandlerFunc{
+		"GET /api/v1/issues/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": float64(1), "title": "Spam", "state": "reported",
+				"channel": "qr", "machine_id": float64(1),
+			})
+		},
+	})
+	defer server.Close()
+	h := newHandler(t, server)
+
+	admin := getIssueDetailAs(t, h.IssueDetail, "1", "admin", 42).Body.String()
+	if !strings.Contains(admin, "/issues/1/reject") {
+		t.Error("an admin must be able to reject an unassigned anonymous report")
+	}
+	if strings.Contains(admin, "/issues/1/start") {
+		t.Error("the start action must stay locked until assignment")
+	}
+	operator := getIssueDetailAs(t, h.IssueDetail, "1", "operator", 7).Body.String()
+	if strings.Contains(operator, "/issues/1/reject") {
+		t.Error("a regular user must not reject a report owned by nobody")
+	}
+}
+
 // TestIssueDetail_QRAnonymousShowsContact proves the detail reads the frozen
 // contact answers instead of showing an invented reporter identity.
 func TestIssueDetail_QRAnonymousShowsContact(t *testing.T) {
@@ -3508,11 +3576,20 @@ func TestIssueDetail_QRAnonymousShowsContact(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"issues.reported_by.anonymous",
+		"issues.detail.reporter_contact_title",
+		"<details",
+		"<summary",
 		"Ana Pérez", "ID-123", "+57 300 1234567", "ana@example.com",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected the detail to contain %q", want)
 		}
+	}
+	if strings.Contains(body, "qr.report.contact_title") {
+		t.Error("the detail must not use the public form's contact label")
+	}
+	if strings.Contains(body, `open="open"`) {
+		t.Error("the contact details must start collapsed")
 	}
 }
 
@@ -3556,5 +3633,47 @@ func TestIssueTemplateDetailPage_ShowsAssignedTemplateName(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "issues.templates.assigned_other: Other Template") {
 		t.Errorf("expected the assigned template name, got %q", buf.String())
+	}
+}
+
+// TestIssueTemplateDetailPage_SLAIsReadableAndTranslated keeps the SLA table
+// out of the old "one long sentence per cell" layout and never shows English
+// duration words in a translated UI.
+func TestIssueTemplateDetailPage_SLAIsReadableAndTranslated(t *testing.T) {
+	tf := func(key string, args ...any) string {
+		switch key {
+		case "issues.templates.unit.hour":
+			return "hora"
+		case "issues.templates.unit.hours":
+			return "horas"
+		case "issues.templates.unit.day":
+			return "día"
+		case "issues.templates.unit.days":
+			return "días"
+		default:
+			return key
+		}
+	}
+	page := IssueTemplateDetailPage(IssueTemplateDetailData{
+		Name: "Bomba",
+		SLAConfig: map[string]map[string]int64{
+			"first_response": {"critical": 120},
+			"resolution":     {"critical": 1440},
+		},
+	}, tf)
+	var buf bytes.Buffer
+	if err := page(&mi.Builder{}).Render(&buf); err != nil {
+		t.Fatalf("render template detail: %v", err)
+	}
+	body := buf.String()
+	for _, want := range []string{"2 horas", "1 día", "<thead", "issues.templates.sla_default_short"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected the SLA table to contain %q", want)
+		}
+	}
+	for _, stale := range []string{"1 h", "1 day", "1 min", "issues.templates.sla_use_defaults"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("unexpected stale SLA text %q", stale)
+		}
 	}
 }
