@@ -812,6 +812,9 @@ func (h *UIHandler) IssueCreate(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		errors["title"] = t("issues.error.title_required")
 	}
+	if assetID <= 0 {
+		errors["asset_id"] = t("issues.error.asset_required")
+	}
 	if notifyState && notifyEmail == "" {
 		errors["notify_channel"] = t("issues.notification.error.email_required")
 	}

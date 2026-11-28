@@ -55,6 +55,7 @@ func TestIssueCreate_RequiredTitle(t *testing.T) {
 
 	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
 		"title": {""},
+		"asset_id": {"7"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 (re-render with error), got %d", rec.Code)
@@ -122,22 +123,14 @@ func TestIssueCreate_WithAsset_LinksCorrectly(t *testing.T) {
 	}
 }
 
-// TestIssueCreate_WithoutAsset_OmitsAssetID confirms the picker's own
-// "nothing selected" state (an empty string, not "0") correctly
-// results in no asset_id being sent at all, not a spurious asset_id=0.
-func TestIssueCreate_WithoutAsset_OmitsAssetID(t *testing.T) {
-	var created map[string]any
+// TestIssueCreate_WithoutAsset_RequiresAsset confirms an issue cannot be
+// created without a linked asset. The form re-renders with the asset-required
+// error and no issue is persisted.
+func TestIssueCreate_WithoutAsset_RequiresAsset(t *testing.T) {
+	var created bool
 	server := mockOLU(t, map[string]http.HandlerFunc{
-		"GET /api/v2/fsm/def": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{{"id": float64(1), "name": "seam_issue_lifecycle"}}})
-		},
-		"POST /api/v2/fsm/machine": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"id": float64(1), "state": "reported"})
-		},
 		"POST /api/v1/issues": func(w http.ResponseWriter, r *http.Request) {
-			json.NewDecoder(r.Body).Decode(&created)
+			created = true
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"id": float64(2)})
@@ -151,9 +144,14 @@ func TestIssueCreate_WithoutAsset_OmitsAssetID(t *testing.T) {
 		"asset_id": {""},
 	})
 
-	assertRedirectsTo(t, rec, "/issues/2")
-	if _, ok := created["asset_id"]; ok {
-		t.Errorf("expected no asset_id key at all when the picker had no selection, got %v", created["asset_id"])
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (re-render with error), got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "issues.error.asset_required") {
+		t.Error("expected the asset-required error key in the re-rendered form")
+	}
+	if created {
+		t.Error("expected no issue to be created when asset_id is missing")
 	}
 }
 
@@ -180,7 +178,7 @@ func TestIssueCreate_CapturesReportedBy(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	form := url.Values{"title": {"Leaking valve"}}
+	form := url.Values{"title": {"Leaking valve"}, "asset_id": {"7"}}
 	req := httptest.NewRequest("POST", "/issues", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req = req.WithContext(auth.ContextWithClaims(req.Context(),
@@ -220,7 +218,10 @@ func TestIssueCreate_WithoutUser_OmitsReportedBy(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No session"}})
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
+		"title":    {"No session"},
+		"asset_id": {"7"},
+	})
 	assertRedirectsTo(t, rec, "/issues/1")
 	if _, ok := created["reported_by"]; ok {
 		t.Errorf("expected no reported_by key when there is no session user, got %v", created["reported_by"])
@@ -1088,7 +1089,10 @@ func TestIssueCreate_BootstrapsEightStateFSMDefinition(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"Bootstraps the FSM"}})
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
+		"title":    {"Bootstraps the FSM"},
+		"asset_id": {"7"},
+	})
 	assertRedirectsTo(t, rec, "/issues/1")
 
 	if spec == nil {
@@ -2135,19 +2139,18 @@ func TestIssueCreate_WithoutAsset_DefaultsCategoryNormal(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	rec := postForm(t, h.IssueCreate, "/issues", url.Values{"title": {"No asset here"}, "priority": {"high"}})
-	assertRedirectsTo(t, rec, "/issues/1")
-	if created == nil {
-		t.Fatal("xolu.Create for issues was never called")
+	rec := postForm(t, h.IssueCreate, "/issues", url.Values{
+		"title":    {"No asset here"},
+		"priority": {"high"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (re-render with error), got %d", rec.Code)
 	}
-	if created["asset_category"] != "normal" {
-		t.Errorf("expected asset_category=normal when no asset is linked, got %v", created["asset_category"])
+	if !strings.Contains(rec.Body.String(), "issues.error.asset_required") {
+		t.Error("expected the asset-required error key when no asset is linked")
 	}
-	if _, ok := created["sla_first_response_deadline"]; !ok {
-		t.Error("expected sla_first_response_deadline to be set on issue creation")
-	}
-	if _, ok := created["sla_resolution_deadline"]; !ok {
-		t.Error("expected sla_resolution_deadline to be set on issue creation")
+	if created != nil {
+		t.Error("expected no issue to be created when asset_id is missing")
 	}
 }
 
@@ -2411,7 +2414,7 @@ func TestIssueCreate_DefaultsAssigneeToCreator(t *testing.T) {
 	defer server.Close()
 	h := newHandler(t, server)
 
-	form := url.Values{"title": {"Leaking valve"}}
+	form := url.Values{"title": {"Leaking valve"}, "asset_id": {"7"}}
 	req := httptest.NewRequest("POST", "/issues", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req = req.WithContext(auth.ContextWithClaims(req.Context(),

@@ -26,7 +26,7 @@
         "name",
         "status"
       ],
-      "x-seam-help": "Optional -- search for the asset this issue relates to",
+      "x-seam-help": "Search for the asset this issue relates to",
       "x-seam-help-style": "inline"
     },
     "priority": {
@@ -69,6 +69,7 @@
     }
   },
   "required": [
-    "title"
+    "title",
+    "asset_id"
   ]
 }
